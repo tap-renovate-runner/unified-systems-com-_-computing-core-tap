@@ -1,0 +1,17 @@
+{
+  "slug": "LOADS_LIBRARY__computing_core",
+  "name": "Loads Library",
+  "description": "This program loads this library at run time or link time: it imports the Python distribution, or its dynamic linker resolves the shared object. One verb for both because the inventory question is the same (which software runs this code), and LINKS_LIBRARY would not be true of a Python import. A reference, not containment.",
+  "sources": [
+    "computing_core__program"
+  ],
+  "targets": [
+    "computing_core__library"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}

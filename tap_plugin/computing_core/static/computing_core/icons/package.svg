@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Original glyph, drawn for this plugin (no third-party artwork): a closed parcel in three-quarter view. -->
+<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+  <rect width="80" height="80" rx="8" fill="#5A4082"/>
+  <path d="M40 16 20 27v26l20 11 20-11V27Z" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M20 27l20 11 20-11M40 38v26" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round"/>
+</svg>

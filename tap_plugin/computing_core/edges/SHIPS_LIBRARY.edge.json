@@ -1,0 +1,17 @@
+{
+  "slug": "SHIPS_LIBRARY__computing_core",
+  "name": "Ships Library",
+  "description": "This package bundles this library: the library's files arrive on the host as part of the package's installation (a shared object an apk carries, a native extension inside a wheel). A reference, not containment. A library built or vendored outside any package manager has no such edge.",
+  "sources": [
+    "computing_core__package"
+  ],
+  "targets": [
+    "computing_core__library"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}

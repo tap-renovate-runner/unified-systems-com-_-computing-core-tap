@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Original glyph, drawn for this plugin (no third-party artwork): a shield with a check mark. -->
+<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+  <rect width="80" height="80" rx="8" fill="#82503F"/>
+  <path d="M40 15 20 23v16c0 12 8 21 20 26 12-5 20-14 20-26V23Z" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M31 40l7 7 12-14" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

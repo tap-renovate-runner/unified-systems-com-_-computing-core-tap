@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Original glyph, drawn for this plugin (no third-party artwork): a window frame over a base layer. -->
+<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+  <rect width="80" height="80" rx="8" fill="#2A5F5F"/>
+  <rect x="16" y="18" width="48" height="30" rx="3" fill="none" stroke="#FFFFFF" stroke-width="3"/>
+  <path d="M16 27h48" stroke="#FFFFFF" stroke-width="3"/>
+  <path d="M14 56h52M24 64h32" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+</svg>

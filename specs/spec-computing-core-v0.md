@@ -33,6 +33,11 @@ Networking is an especially important part of this layer. v0 should model the st
 | req-computing-core-tcp | [TCP Connection Modeling](#tcp-connection-modeling) | Proposed | TCP connections are modeled as nodes rather than edges |
 | req-computing-core-host | [Host Modeling](#host-modeling) | Implemented | One `host` type for every OS-bearing environment; physical-versus-virtual is `kind`; keyed `(realm, stable_id)` |
 | req-computing-core-os-accounts | [OS Accounts And Groups](#os-accounts-and-groups) | Implemented | `os_user` / `os_group` live in one host's account database, keyed to it; `user` retired |
+| req-computing-core-package | [Package Modeling](#package-modeling) | Implemented | `package`: one release of an apk/deb/rpm/pypi/npm package, keyed `(ecosystem, name, version)` |
+| req-computing-core-library | [Library Modeling](#library-modeling) | Implemented | `library`: code built or vendored outside a package manager; whether it carries cryptography is an edge, not a column |
+| req-computing-core-operating-system | [Operating System Modeling](#operating-system-modeling) | Implemented | `operating_system`: keyed `(os_id, version_id, build_id)` so a rolling distro's placeholder VERSION_ID does not merge builds |
+| req-computing-core-crypto-provider | [Crypto Provider Modeling](#crypto-provider-modeling) | Implemented | `crypto_provider`: a cryptographic implementation found in an artifact and its FIPS-boundary disposition; no key material |
+| req-computing-core-inventory-edges | [Software Inventory Edges](#software-inventory-edges) | Implemented | `INSTALLS_PACKAGE`, `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM`, `CARRIES_CRYPTO_PROVIDER`; all references |
 | req-computing-core-protocols | [Protocol Scope](#protocol-scope) | Proposed | v0 stops just above layer four with generic application protocol modeling |
 | req-computing-core-edges | [Edge Types](#edge-types) | Proposed | Expressive edge family for structural and runtime relationships |
 | req-computing-core-reference | [Reference Data](#reference-data) | Proposed | Dimension nodes and any seed taxonomy data |
@@ -171,7 +176,7 @@ The initial v0 model set is:
 | Category | Models | Notes |
 | --- | --- | --- |
 | Compute | `host`; planned: `virtual_machine`, `container` | `host` is built (one type, `kind` says which environment); the two planned rows can still be minted as specialisations if a consumer needs them |
-| Runtime | `operating_system`, `program`, `process` | Operating context plus executable/runtime units |
+| Runtime | `operating_system`, `program`, `process`; built since 2026-10-14: `operating_system`, `package`, `library`, `crypto_provider` | Operating context plus executable/runtime units, and the software inventory of a host: see [Package](#package-modeling), [Library](#library-modeling), [Operating System](#operating-system-modeling), [Crypto Provider](#crypto-provider-modeling) |
 | Storage | `storage_volume`, `filesystem`, `file` | Generic storage abstraction plus mounted and contained data |
 | Networking | `network_interface`, `ip_address`, `ip_subnet`, `port` | Stable IP-stack primitives |
 | Transport/Protocol | `tcp_connection`, `application_protocol` | Session node plus protocol abstraction above layer four |
@@ -182,7 +187,10 @@ Definitions and intent:
 
 - **virtual_machine**: a guest compute environment managed above physical hardware
 - **container**: a containerized execution environment
-- **operating_system**: the OS environment associated with a virtual machine or container host
+- **operating_system**: the OS environment associated with a virtual machine or container host; built, keyed by os-release `ID`, `VERSION_ID` and a build identifier ([Operating System Modeling](#operating-system-modeling))
+- **package**: one release of a package a package manager installs ([Package Modeling](#package-modeling))
+- **library**: code an application imports or links that was built or vendored outside a package manager ([Library Modeling](#library-modeling))
+- **crypto_provider**: a cryptographic implementation found in an artifact, with its FIPS-boundary disposition ([Crypto Provider Modeling](#crypto-provider-modeling))
 - **program**: the execution of an application concept that may spawn multiple processes and rely on executable/configuration/data files
 - **process**: a concrete runtime process
 - **storage_volume**: a generic storage backing unit such as a block-backed logical volume
@@ -418,6 +426,168 @@ The only consumer was samsite's people seed, which moves to `identity_core__huma
 | req-computing-core-os-accounts-5 | User Retired | Implemented | The manifest defines no `computing_core__user`. Core's retired-type registry carries the reason. An older seed's `user` node is stripped rather than failed. Migration `0007` deletes `user` rows and their edges and keeps everything else. | `tests/test_retired_user.py` |
 | req-computing-core-os-accounts-6 | Held By A Human | Implemented | An `os_user` can be the source of `HELD_BY_HUMAN__identity_core` with no change to either plugin's edge set. | Verified on a stack with identity_core installed. Not in this suite, because computing_core does not depend on identity_core. |
 
+### Package Modeling
+----
+RID: `req-computing-core-package`
+
+Status: `Implemented`
+
+A `package` is one release of something a package manager installs: an apk of a Wolfi image, a deb or rpm, a Python or npm distribution. It is the row an SBOM lists and the unit a vulnerability scanner matches an advisory against (computing-core#33).
+
+#### Implementation
+
+| field | meaning |
+| --- | --- |
+| `ecosystem` | The package-URL type of the manager: `apk`, `deb`, `rpm`, `pypi`, `npm`, `generic`. Lower-case, an open vocabulary (the purl spec adds types). Identity. |
+| `name`, `version` | As the package manager reports them. Identity. |
+| `architecture` | `x86_64`, `aarch64`, `noarch`; empty where the ecosystem has none. The value of the observation that last wrote it. Not identity. |
+| `purl`, `cpe`, `license` | CycloneDX component fields of the same names. `license` holds an SPDX expression. |
+| `source_document` | Which document the most recent observation came from: `sbom`, `uv.lock`, `supplemental`. Not identity. |
+
+The names follow CycloneDX components so an SBOM row maps in without translation. CycloneDX `bom-ref` is not stored: it is a document-local handle, not identity. File hashes are not stored: no inventory column needs them, and the SBOM remains the place that carries them.
+
+**Why `(ecosystem, name, version)` and not the purl.** A purl for an apk carries `arch` and `distro` qualifiers that differ between two scans of the same package. Identity is the three facts every ecosystem has; the qualifiers that matter are columns. Two architectures of one release are one node, because a vulnerability attaches to the release and the inventory counts it once. The cost is that `architecture` and `source_document` hold the last observation's value when two documents disagree.
+
+**A package is not a library.** A package may bundle many things; a `library` is code built or vendored outside a package manager. A package that ships a library draws `SHIPS_LIBRARY`. A scanner finding attaches to a package through the existing `CARRIES_COMPLIANCE_FINDING` edge, whose source side is open.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-package-1 | Keyed By Ecosystem, Name And Version | Implemented | `computing_core__package` declares `NATURAL_KEY = (ecosystem, name, version)` and all three are required. The same name in another ecosystem, or another version, is another node. | `tests/test_software_inventory.py::TestPackage::test_found_again_by_ecosystem_name_and_version` |
+| req-computing-core-package-2 | Architecture And Source Are Not Identity | Implemented | Changing `architecture` or `source_document` leaves the row findable by its key. | `::TestPackage::test_architecture_and_source_document_are_not_identity` |
+| req-computing-core-package-3 | Ecosystem Is A Purl Type | Implemented | `ecosystem` is a lower-case purl type; an upper-case or empty value is refused. | `::TestPackage::test_ecosystem_is_a_purl_type` |
+| req-computing-core-package-4 | Runtime Dimension | Implemented | A package carries `tap.computing: runtime`. | `::TestPackage::test_create_and_display` |
+| req-computing-core-package-5 | Findings Attach Without A New Edge | Implemented | A `compliance_core` finding attaches to a package or a library with `CARRIES_COMPLIANCE_FINDING`; this plugin adds no finding edge. | `::TestEdges::test_a_scanner_finding_attaches_to_a_package_or_a_library` runs only on a grid with compliance_core installed. |
+
+### Library Modeling
+----
+RID: `req-computing-core-library`
+
+Status: `Implemented`
+
+A `library` is a programmatic library an application imports or links that was built or vendored outside a package manager: the OpenSSL FIPS provider compiled from a pinned tarball, the `cryptography` distribution compiled from its sdist (computing-core#33). These are the components an SBOM knows only because someone declared them (tap `req-cicd-sbom-3`), and the ones a vulnerability has to be attributed to by hand.
+
+#### Implementation
+
+| field | meaning |
+| --- | --- |
+| `ecosystem`, `name`, `version` | As for `package`. `generic` for a tarball with no registry. Identity. |
+| `language` | Implementation language: `c`, `python`, `rust`, `go`. |
+| `purl`, `cpe`, `license` | As for `package`. For a `pkg:generic` library the CPE is what lets an advisory feed match at all (tap `docker/sbom-supplemental.json`). |
+| `source_kind` | `self-built`, `source-built` or `copied-image`: how it entered the artifact without a package manager installing it. The first and last are the supplemental manifest's `source_kind`; `source-built` is a registry package compiled from its sdist (tap `req-cicd-sbom-12-6`). `null` means not observed. |
+| `source_url` | Where the source it was built from was fetched. |
+| `path` | Where it sits in the artifact. |
+
+**Cryptography is an edge.** Whether a library carries cryptography is the presence of `CARRIES_CRYPTO_PROVIDER` to a `crypto_provider`, which also says which provider and its disposition. There is no `carries_cryptography` column: it would be a second writable copy of that edge. A library that carries cryptography nobody has classified yet has an edge to a `crypto_provider` whose `boundary` is `null`.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-library-1 | Keyed By Ecosystem, Name And Version | Implemented | `computing_core__library` declares `NATURAL_KEY = (ecosystem, name, version)`; all three are required. | `tests/test_software_inventory.py::TestLibrary::test_key_fields_required` |
+| req-computing-core-library-2 | Distinct From Package | Implemented | A package and a library of one name and version are two nodes of two types; neither is a subtype of the other. | `::TestLibrary::test_a_package_and_a_library_of_one_name_are_two_nodes` |
+| req-computing-core-library-3 | Source Kind Is Closed, Null Is Unobserved | Implemented | `source_kind` accepts only the three values or `null`. | Authorizes the model's `# noqa: DJ001  (req-computing-core-library-3)`. `::TestLibrary::test_source_kind_is_a_closed_vocabulary_and_null_is_unobserved` |
+| req-computing-core-library-4 | Cryptography Is Not A Column | Implemented | The model has no field recording that it carries cryptography; the `CARRIES_CRYPTO_PROVIDER` edge is that fact. | `::TestLibrary::test_cryptography_is_an_edge_not_a_column` |
+
+### Operating System Modeling
+----
+RID: `req-computing-core-operating-system`
+
+Status: `Implemented`
+
+An `operating_system` is an OS as a distro publishes it: Wolfi, Ubuntu 24.04, Windows Server 2022. It is the `operating_system` row of the model catalog (`req-computing-core-models`), built. A `host` runs one with `RUNS_OPERATING_SYSTEM`.
+
+#### Implementation
+
+| field | meaning |
+| --- | --- |
+| `os_id` | `/etc/os-release` `ID`: `wolfi`, `ubuntu`, `debian`. Identity; must not be empty. |
+| `version_id` | `VERSION_ID` exactly as reported, even when it is a placeholder (Wolfi reports `20230201` on every build). Empty when the OS reports none. Identity. |
+| `build_id` | `BUILD_ID` where the distro sets one; for a rolling distro, what pins the build (for a container, the digest of the pinned base image). Empty means none and not rolling. Identity. |
+| `name` | Display name (`NAME`). |
+| `vendor` | Who publishes it. |
+| `rolling` | `true` for a rolling-release distro, whose `version_id` does not identify a build. `null` means not observed. |
+| `base_image` | The image reference, with digest, this OS came from, when it came from one. |
+| `end_of_life` | An ISO date. `null` means none published or not observed. |
+
+**Why three parts.** Wolfi is a rolling distribution: `ID=wolfi` and a fixed placeholder `VERSION_ID` on every build. Keyed on those two alone, every Wolfi image ever built would be one node, and a vulnerability fixed in the 2026-10 base would read as present in the 2026-05 one. The real identity is the pinned base-image digest together with the installed package set; the digest goes in `build_id`, and the package set is the `package` nodes the hosts running that image install. All three key parts must be present in a write: a collector that forgot `build_id` would otherwise mint a node indistinguishable from an OS that reports none.
+
+**`host.os` is not migrated.** `host.os` remains the free-text report of the same fact (`req-computing-core-host` says it "can become its own `operating_system` node later without migrating this field"). Nothing derives one from the other.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-operating-system-1 | Keyed By Id, Version And Build | Implemented | `computing_core__operating_system` declares `NATURAL_KEY = (os_id, version_id, build_id)`. A rename of `name` leaves the row findable. | `tests/test_software_inventory.py::TestOperatingSystem::test_found_again_across_a_rename_of_the_display_name` |
+| req-computing-core-operating-system-2 | A Placeholder Version Does Not Merge Builds | Implemented | Two operating systems with one `os_id` and `version_id` and different `build_id` are two nodes. | `::TestOperatingSystem::test_a_placeholder_version_id_does_not_merge_two_builds` |
+| req-computing-core-operating-system-3 | Every Key Part Is Present | Implemented | A write missing `os_id`, `version_id` or `build_id` is refused; `version_id` and `build_id` may be empty strings, `os_id` may not. | `::TestOperatingSystem::test_every_key_part_must_be_present`, `::test_os_id_must_not_be_empty_but_the_others_may_be` |
+| req-computing-core-operating-system-4 | Null Is Unobserved | Implemented | `rolling` and `end_of_life` default to `null`; `end_of_life` accepts only an ISO date. | `::TestOperatingSystem::test_rolling_and_end_of_life_default_to_unobserved`, `::test_end_of_life_is_an_iso_date` |
+| req-computing-core-operating-system-5 | Host OS Stays Free Text | Implemented | `host.os` is unchanged and still accepts a free-text report. | `::TestOperatingSystem::test_host_os_stays_the_free_text_report` |
+
+### Crypto Provider Modeling
+----
+RID: `req-computing-core-crypto-provider`
+
+Status: `Implemented`
+
+A `crypto_provider` is a cryptographic implementation found in an artifact, and what was decided about it. It is the finding tap's crypto-BOM gate produces (`req-fips-crypto-bom`) put on the grid: the OpenSSL FIPS provider, a Go binary's `crypto/tls`, a Rust crate's `aws-lc-rs`, a `libsodium` wheel. FIPS is not "everything uses OpenSSL"; it is that every provider that can execute is the validated module, an equivalent, proven unreached, or named out of boundary. This node is where that disposition is readable without running the scanner.
+
+#### Implementation
+
+| field | meaning |
+| --- | --- |
+| `scope` | What was scanned: the image or environment the finding is from (`tap-web`), or a plugin slug. Identity. |
+| `artifact` | Where it was found: an absolute path (`/usr/lib/ossl-modules/fips.so`), or `dist:<name>` for an installed distribution. Identity. |
+| `provider` | The implementation, by the registry's name: `openssl-system`, `openssl-fips-provider`, `go-crypto`, `rust-aws-lc-rs`, `libsodium`. Identity. |
+| `provider_kind` | `fips-module` (the validated module itself), `system-openssl` (routes through it), `embedded-openssl`, `non-openssl`. Required. |
+| `boundary` | The disposition, spelled as tap's `Boundary`: `validated`, `fips-mode-unvalidated-build`, `out-of-boundary`, `unreached`, `must-fix`. `null` means detected and not dispositioned, which the gate fails closed on. |
+| `rationale` | Why that boundary: the registry's reviewed sentence. |
+| `fips_validation` | The validation status of the module as shipped, as a sentence. |
+
+**Presence, never material.** The node records that an implementation is present and what was decided. It has no field that could hold key material, a fingerprint or file contents, and a test fails if one is added. The CycloneDX CBOM `cryptographic-asset` models algorithms, protocols, certificates and key material and has no implementation-level disposition, so none of its fields are borrowed.
+
+**`validated` is not a claim made here.** A provider whose `boundary` is `fips-mode-unvalidated-build` runs in FIPS mode but is not CMVP-validated as shipped; the distinct value exists so presence cannot be read as a certificate. This plugin stores the disposition a collector reports and verifies nothing.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-crypto-provider-1 | Keyed By Scope, Artifact And Provider | Implemented | `computing_core__crypto_provider` declares `NATURAL_KEY = (scope, artifact, provider)`; a change of `boundary` leaves the row findable, and the same finding in another scope is another node. | `tests/test_software_inventory.py::TestCryptoProvider::test_found_again_by_scope_artifact_and_provider` |
+| req-computing-core-crypto-provider-2 | Boundary Vocabulary Matches The Registry | Implemented | `boundary` accepts exactly the five values of tap's `Boundary`, and nothing else. | `::TestCryptoProvider::test_every_registry_boundary_is_accepted`, `::test_boundary_is_closed_and_null_is_unclassified` |
+| req-computing-core-crypto-provider-3 | Null Is Unclassified | Implemented | A provider written without `boundary` is stored with `null`, not refused and not defaulted to a safe-looking value. | Authorizes the model's `# noqa: DJ001  (req-computing-core-crypto-provider-3)`. `::TestCryptoProvider::test_boundary_is_closed_and_null_is_unclassified` |
+| req-computing-core-crypto-provider-4 | Kind Is Required And Closed | Implemented | `provider_kind` is required and accepts only the four values. | `::TestCryptoProvider::test_required_fields`, `::test_provider_kind_is_closed` |
+| req-computing-core-crypto-provider-5 | No Field Can Hold Key Material | Implemented | The model has no column named for a key, fingerprint, secret, content or hash. | `::TestCryptoProvider::test_it_has_no_field_that_could_hold_key_material` |
+
+### Software Inventory Edges
+----
+RID: `req-computing-core-inventory-edges`
+
+Status: `Implemented`
+
+Five edges connect the inventory types to `host` and `program`. Each is a reference, not containment: a package, library, operating system or provider outlives and is shared by the things pointing at it, so none is in any model's `CONTAINMENT_EDGES`, and retiring a host leaves them. None carries properties; each declares the plain identity (`discriminators: []`). All carry `tap.computing: runtime`.
+
+#### Implementation
+
+| edge | sentence | justification |
+| --- | --- | --- |
+| `INSTALLS_PACKAGE__computing_core` | `<host> INSTALLS_PACKAGE <package>` | the packages table of an image or host |
+| `SHIPS_LIBRARY__computing_core` | `<package> SHIPS_LIBRARY <library>` | a library a package bundles (computing-core#33); a library built outside a package manager has none |
+| `LOADS_LIBRARY__computing_core` | `<program> LOADS_LIBRARY <library>` | which software runs a library. `LINKS_LIBRARY` (the issue's proposal) is not true of a Python import, and the question is the same |
+| `RUNS_OPERATING_SYSTEM__computing_core` | `<host> RUNS_OPERATING_SYSTEM <operating_system>` | the operating-systems table. `RUNS_ON` would end in a preposition (`req-tap-plugin-edge-naming`) |
+| `CARRIES_CRYPTO_PROVIDER__computing_core` | `<library \| package \| program> CARRIES_CRYPTO_PROVIDER <crypto_provider>` | the crypto-providers table's "carried by" column. One relationship, three kinds of code: the library is the provider, or embeds it, or routes its cryptography through it |
+
+There is no operating-system-to-package edge: which packages an OS comprises is the packages its hosts install, and a second statement of that would be two copies. There is no container-image type here; a container is a `host` with `kind: container`.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-inventory-edges-1 | The Sentences Connect | Implemented | Each edge connects its declared source type to its declared target type and carries `tap.computing: runtime`. | `tests/test_software_inventory.py::TestEdges::test_the_sentences_connect` |
+| req-computing-core-inventory-edges-2 | Wrong Direction Or Type Is Refused | Implemented | The reverse of each edge, and an edge of the wrong endpoint type, are refused wherever an endpoint type declares its edges (`host`, `package`, `library`, `operating_system`, `crypto_provider`). | `::TestEdges::test_the_wrong_way_round_or_wrong_type_is_refused`. The grid permits an edge when either the node's declaration or the edge definition allows each side, so `program`, which declares no edges, leaves its side open; the edge definition's `sources` is then a grant, not a restriction. |
+| req-computing-core-inventory-edges-3 | References, Not Containment | Implemented | Retiring a host with `cascade="contained"` leaves the package, operating system, library and provider reachable from it. | `::TestEdges::test_none_of_them_is_containment` |
+| req-computing-core-inventory-edges-4 | Plain Identity, No Properties | Implemented | Each edge declares `identity: {discriminators: []}` (found again by type, source and target), has no `property_schema`, and carries `tap.computing: runtime`. | `::TestEdges::test_every_edge_declares_the_plain_identity_and_no_properties` |
+
 ### Protocol Scope
 ----
 RID: `req-computing-core-protocols`
@@ -456,7 +626,9 @@ The plugin favors a small but expressive edge family over generic catch-all edge
 > edges computing_core actually ships today are the ones consumers emit / seed:
 > `GENERATES_FILE` (and, until 2026-10-02, `FETCHES_DOCUMENT` and `HOSTS_DOCUMENT`; see below),
 > and since 2026-10-08 `DEFINES_OS_USER`, `DEFINES_OS_GROUP` and `MEMBER_OF_GROUP`
-> ([OS Accounts And Groups](#os-accounts-and-groups)).
+> ([OS Accounts And Groups](#os-accounts-and-groups)), and since 2026-10-14 `INSTALLS_PACKAGE`,
+> `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM` and `CARRIES_CRYPTO_PROVIDER`
+> ([Software Inventory Edges](#software-inventory-edges)).
 > The candidates below return — correctly named per the add-edge skill — when a collector
 > actually emits them.
 >

@@ -1,0 +1,19 @@
+{
+  "slug": "CARRIES_CRYPTO_PROVIDER__computing_core",
+  "name": "Carries Crypto Provider",
+  "description": "This code carries this cryptographic implementation: the library is the provider (the self-built OpenSSL FIPS module), the package or program embeds it (a Go binary's crypto/tls, a Rust crate's aws-lc), or it routes its cryptography through it (cryptography to the system OpenSSL). The crypto_provider's own boundary says whether that is acceptable. Sources are software artifacts only; a key or certificate is never an endpoint, and the edge carries no properties.",
+  "sources": [
+    "computing_core__library",
+    "computing_core__package",
+    "computing_core__program"
+  ],
+  "targets": [
+    "computing_core__crypto_provider"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}
