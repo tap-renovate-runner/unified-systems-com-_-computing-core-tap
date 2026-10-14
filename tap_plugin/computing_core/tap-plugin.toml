@@ -1,5 +1,5 @@
 manifest_version = "0"
-plugin_version = "0.6.0" # x-release-please-version
+plugin_version = "v0.6.0" # x-release-please-version
 # 0.3.0: the first core release whose image still boots under FIPS on current Wolfi (tap#933 apk pins); v0.1.5 aborts at boot (no hashlib.md5).
 requires_tap = ">=0.3.0"
 slug = "computing_core"
