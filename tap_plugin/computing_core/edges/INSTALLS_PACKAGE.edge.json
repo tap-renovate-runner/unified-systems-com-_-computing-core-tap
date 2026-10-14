@@ -1,0 +1,17 @@
+{
+  "slug": "INSTALLS_PACKAGE__computing_core",
+  "name": "Installs Package",
+  "description": "This host has this package installed: the package manager's database on the host lists it (an apk in /lib/apk/db, a dpkg or rpm entry, a pip or npm install). A reference, not containment: a package is shared by every host that installs it and outlives any one of them. Drawn from the SBOM of the environment the host represents; the SBOM's document is recorded on the package (source_document), not on the edge.",
+  "sources": [
+    "computing_core__host"
+  ],
+  "targets": [
+    "computing_core__package"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}

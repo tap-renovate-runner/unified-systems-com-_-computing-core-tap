@@ -4,7 +4,7 @@ plugin_version = "0.5.0" # x-release-please-version
 requires_tap = ">=0.3.0"
 slug = "computing_core"
 name = "TAP Computing Core"
-description = "Vendor-neutral primitives for modern computing systems: hosts and their local accounts and groups, interfaces, addresses, ports, connections, programs, and files."
+description = "Vendor-neutral primitives for modern computing systems: hosts and their local accounts and groups, interfaces, addresses, ports, connections, programs, and files, and the software inventory of a host: operating systems, packages, libraries and the crypto providers they carry."
 
 [models]
 computing_core__network_interface = "tap_plugin.computing_core.models.network_interface.NetworkInterface"
@@ -20,12 +20,21 @@ computing_core__os_user = "tap_plugin.computing_core.models.os_user.OsUser"
 computing_core__os_group = "tap_plugin.computing_core.models.os_group.OsGroup"
 computing_core__web_host = "tap_plugin.computing_core.models.web_host.WebHost"
 computing_core__web_document = "tap_plugin.computing_core.models.web_document.WebDocument"
+computing_core__package = "tap_plugin.computing_core.models.package.Package"
+computing_core__library = "tap_plugin.computing_core.models.library.Library"
+computing_core__operating_system = "tap_plugin.computing_core.models.operating_system.OperatingSystem"
+computing_core__crypto_provider = "tap_plugin.computing_core.models.crypto_provider.CryptoProvider"
 
 [edges]
 GENERATES_FILE__computing_core = "edges/GENERATES_FILE.edge.json"
 DEFINES_OS_USER__computing_core = "edges/DEFINES_OS_USER.edge.json"
 DEFINES_OS_GROUP__computing_core = "edges/DEFINES_OS_GROUP.edge.json"
 MEMBER_OF_GROUP__computing_core = "edges/MEMBER_OF_GROUP.edge.json"
+INSTALLS_PACKAGE__computing_core = "edges/INSTALLS_PACKAGE.edge.json"
+SHIPS_LIBRARY__computing_core = "edges/SHIPS_LIBRARY.edge.json"
+LOADS_LIBRARY__computing_core = "edges/LOADS_LIBRARY.edge.json"
+RUNS_OPERATING_SYSTEM__computing_core = "edges/RUNS_OPERATING_SYSTEM.edge.json"
+CARRIES_CRYPTO_PROVIDER__computing_core = "edges/CARRIES_CRYPTO_PROVIDER.edge.json"
 
 [grift]
 dimension = "grift/dimension.grift.json"

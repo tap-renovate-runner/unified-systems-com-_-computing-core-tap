@@ -1,0 +1,17 @@
+{
+  "slug": "RUNS_OPERATING_SYSTEM__computing_core",
+  "name": "Runs Operating System",
+  "description": "This host runs this operating system build. A container host runs the OS of its base image; a server runs the OS installed on it. The edge points at the build (os_id, version_id, build_id), not at a family: two Wolfi images built from different base-image digests are two operating systems. A reference, not containment.",
+  "sources": [
+    "computing_core__host"
+  ],
+  "targets": [
+    "computing_core__operating_system"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}
