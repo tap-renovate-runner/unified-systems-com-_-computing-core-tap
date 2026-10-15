@@ -1,0 +1,17 @@
+{
+  "slug": "DERIVES_FROM_SOURCE_PACKAGE__computing_core",
+  "name": "Derives From Source Package",
+  "description": "This package is built from this source package: the apk database's origin (o:) line, a deb's Source field, an rpm's source RPM. A reference, not containment: one source package builds many binary packages and outlives any one of them. Drawn for every package, including one whose source is itself, so a join by source never needs a fallback. Binary and source share one version in the apk database. A package in an ecosystem with no binary/source split (pypi, npm) has no such edge.",
+  "sources": [
+    "computing_core__package"
+  ],
+  "targets": [
+    "computing_core__source_package"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}
