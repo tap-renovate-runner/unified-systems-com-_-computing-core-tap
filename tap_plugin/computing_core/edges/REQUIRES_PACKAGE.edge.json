@@ -1,0 +1,17 @@
+{
+  "slug": "REQUIRES_PACKAGE__computing_core",
+  "name": "Requires Package",
+  "description": "This package needs this package: the dependency link an SBOM lists (CycloneDX dependencies[].dependsOn), between two packages the same document lists. A reference, not containment: a dependency outlives the package that named it. Never drawn from a package to itself, and not drawn to a library, a program or a component the document does not list. The document records that the link exists, not whether it is a build-time, run-time or optional dependency.",
+  "sources": [
+    "computing_core__package"
+  ],
+  "targets": [
+    "computing_core__package"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}

@@ -69,6 +69,13 @@ class Host(BaseModel):
             "edges": [{"type": "RUNS_OPERATING_SYSTEM__computing_core"}],
         },
     ]
+    # An SBOM document inventories the host; the document is a reference, never containment.
+    INBOUND_EDGES: ClassVar[list[dict[str, Any]]] = [
+        {
+            "nodes": [{"type": "computing_core__sbom_document"}],
+            "edges": [{"type": "DESCRIBES_HOST__computing_core"}],
+        },
+    ]
     CONTAINMENT_EDGES: ClassVar[tuple[str, ...]] = (
         "DEFINES_OS_USER__computing_core",
         "DEFINES_OS_GROUP__computing_core",

@@ -2,6 +2,7 @@
 
 from typing import Any, ClassVar
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from tap_grid.models import BaseModel
@@ -10,6 +11,23 @@ from tap_grid.models import BaseModel
 #: ``pypi``, ``npm``, ``golang``, ``generic``. Open vocabulary on purpose: the purl spec adds
 #: types, and a closed list here would refuse a real package manager on the day it appears.
 PURL_TYPE_PATTERN = r"^[a-z][a-z0-9.+-]*$"
+
+#: One architecture token as a package manager or a purl ``arch=`` qualifier writes it
+#: (``x86_64``, ``aarch64``, ``noarch``, ``amd64``, ``armhf``). It has no comma and no space, so a
+#: joined value such as ``aarch64, x86_64`` is refused (req-computing-core-package-8).
+ARCHITECTURE_PATTERN = r"^[A-Za-z0-9_.-]*$"
+
+#: The ``cpe_candidates`` list as a JSON Schema, declared once and used by both schema dicts below.
+CPE_CANDIDATES_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "description": "The other CPE 2.3 names a document lists for this component; unique, none repeating cpe.",
+    "uniqueItems": True,
+    "items": {
+        "type": "string",
+        "description": "One CPE 2.3 formatted string, starting cpe:2.3:.",
+        "pattern": r"^cpe:2\.3:",
+    },
+}
 
 
 class Package(BaseModel):
@@ -46,6 +64,7 @@ class Package(BaseModel):
 
     OUTBOUND_EDGES: ClassVar[list[dict[str, Any]]] = [
         {"nodes": [{"type": "computing_core__library"}], "edges": [{"type": "SHIPS_LIBRARY__computing_core"}]},
+        {"nodes": [{"type": "computing_core__package"}], "edges": [{"type": "REQUIRES_PACKAGE__computing_core"}]},
         {
             "nodes": [{"type": "computing_core__crypto_provider"}],
             "edges": [{"type": "CARRIES_CRYPTO_PROVIDER__computing_core"}],
@@ -57,15 +76,17 @@ class Package(BaseModel):
     ]
     INBOUND_EDGES: ClassVar[list[dict[str, Any]]] = [
         {"nodes": [{"type": "computing_core__host"}], "edges": [{"type": "INSTALLS_PACKAGE__computing_core"}]},
+        {"nodes": [{"type": "computing_core__package"}], "edges": [{"type": "REQUIRES_PACKAGE__computing_core"}]},
     ]
 
     FIELD_CRUD_SCHEMA: ClassVar[dict[str, Any]] = {
         "ecosystem": {"type": "string", "pattern": PURL_TYPE_PATTERN},
         "name": {"type": "string", "minLength": 1},
         "version": {"type": "string", "minLength": 1},
-        "architecture": {"type": "string"},
+        "architecture": {"type": "string", "pattern": ARCHITECTURE_PATTERN},
         "purl": {"type": "string"},
         "cpe": {"type": "string"},
+        "cpe_candidates": CPE_CANDIDATES_SCHEMA,
         "license": {"type": "string"},
         "source_document": {"type": "string"},
     }
@@ -73,9 +94,10 @@ class Package(BaseModel):
         "ecosystem": {"validation": "jsonschema", "schema": {"type": "string", "pattern": PURL_TYPE_PATTERN}},
         "name": {"validation": "jsonschema", "schema": {"type": "string", "minLength": 1}},
         "version": {"validation": "jsonschema", "schema": {"type": "string", "minLength": 1}},
-        "architecture": {"validation": "jsonschema", "schema": {"type": "string"}},
+        "architecture": {"validation": "jsonschema", "schema": {"type": "string", "pattern": ARCHITECTURE_PATTERN}},
         "purl": {"validation": "jsonschema", "schema": {"type": "string"}},
         "cpe": {"validation": "jsonschema", "schema": {"type": "string"}},
+        "cpe_candidates": {"validation": "jsonschema", "schema": CPE_CANDIDATES_SCHEMA},
         "license": {"validation": "jsonschema", "schema": {"type": "string"}},
         "source_document": {"validation": "jsonschema", "schema": {"type": "string"}},
     }
@@ -104,6 +126,14 @@ class Package(BaseModel):
     cpe = models.CharField(
         max_length=512, blank=True, default="", help_text="CPE 2.3 name, where the document supplies one."
     )
+    cpe_candidates = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "The other CPE 2.3 names the document lists for this component (Syft's repeated syft:cpe23 "
+            "properties), each starting cpe:2.3:, never repeating cpe. Empty where it lists none. Not identity."
+        ),
+    )
     license = models.CharField(max_length=512, blank=True, default="", help_text="SPDX licence expression.")
     source_document = models.CharField(
         max_length=64,
@@ -114,6 +144,11 @@ class Package(BaseModel):
 
     class Meta(BaseModel.Meta):
         db_table = "computing_core__package"
+
+    def validate(self) -> None:
+        """``cpe_candidates`` never repeats ``cpe`` (req-computing-core-package-7)."""
+        if self.cpe and isinstance(self.cpe_candidates, list) and self.cpe in self.cpe_candidates:
+            raise ValidationError({"cpe_candidates": ["cpe_candidates must not repeat cpe."]})
 
     def get_name(self) -> str:
         return f"{self.name} {self.version}".strip()

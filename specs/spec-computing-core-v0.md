@@ -40,7 +40,7 @@ Networking is an especially important part of this layer. v0 should model the st
 | req-computing-core-crypto-provider | [Crypto Provider Modeling](#crypto-provider-modeling) | Implemented | `crypto_provider`: a cryptographic implementation found in an artifact and its FIPS-boundary disposition; no key material |
 | req-computing-core-inventory-edges | [Software Inventory Edges](#software-inventory-edges) | Implemented | `INSTALLS_PACKAGE`, `DERIVES_FROM_SOURCE_PACKAGE`, `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM`, `CARRIES_CRYPTO_PROVIDER`; all references |
 | req-computing-core-package-dependency | [Package Dependencies](#package-dependencies) | Proposed | `REQUIRES_PACKAGE`: the dependency links an SBOM lists between packages; a reference, no properties |
-| req-computing-core-sbom-document | [SBOM Document](#sbom-document) | Proposed | `sbom_document`: the record that one SBOM existed (content digest, revision lineage, signer), never its body; `DESCRIBES_HOST` |
+| req-computing-core-sbom-document | [SBOM Document](#sbom-document) | Implemented | `sbom_document`: the record that one SBOM existed (content digest, revision lineage, signer), never its body; `DESCRIBES_HOST` |
 | req-computing-core-sbom-parse | [SBOM Parser](#sbom-parser) | Proposed | A pure, Django-free CycloneDX 1.4-1.7 parser: bytes in, a typed batch of packages, libraries, source packages, the operating system and edges out; fails closed |
 | req-computing-core-sbom-build | [SBOM Builder](#sbom-builder) | Proposed | The mirror of the parser: a throwaway CycloneDX document built from packages on the grid, carrying what a scanner matches on |
 | req-computing-core-protocols | [Protocol Scope](#protocol-scope) | Proposed | v0 stops just above layer four with generic application protocol modeling |
@@ -484,9 +484,9 @@ The distro resolved from the purl `distro=` qualifier even with no operating-sys
 
 | ACID | Title | Status | Description | Notes |
 | --- | --- | :---: | --- | --- |
-| req-computing-core-package-6 | Whole Purl Kept | Proposed | The `purl` column holds the purl exactly as the document gave it, `arch`, `distro` and `upstream` qualifiers included. The parser does not trim, normalise or rebuild it. | Planned: `tests/test_sbom_parse.py::test_purl_qualifiers_survive`. The 1024-character column already holds them; the gap found 2026-10-15 was a bundle that wrote bare purls (177 of 178 rows). |
-| req-computing-core-package-7 | CPE Candidates Are A Schema'd List | Proposed | `cpe_candidates` accepts a list of unique strings each beginning `cpe:2.3:` and refuses anything else; it defaults to the empty list and never repeats `cpe`. Declared in both `FIELD_CRUD_SCHEMA` and `FIELD_VALIDATION_SCHEMA` (a JSON column with no schema is `{type: object}` and blocks strict validation). | Planned: `tests/test_software_inventory.py::TestPackage::test_cpe_candidates_*`. Additive migration. |
-| req-computing-core-package-8 | One Observation, Never A Join | Proposed | `architecture` holds the one value the document gave for this component (the `arch=` qualifier). No writer concatenates two architectures into one string. | Planned. Found 2026-10-15: the inventory bundle held `aarch64, x86_64` in one column. The release is one node across architectures (above), so the column is the last observation, not a set. |
+| req-computing-core-package-6 | Whole Purl Kept | Proposed | The `purl` column holds the purl exactly as the document gave it, `arch`, `distro` and `upstream` qualifiers included. The parser does not trim, normalise or rebuild it. | Planned: `tests/test_sbom_parse.py::test_purl_qualifiers_survive`. The 1024-character column already holds them; the gap found 2026-10-15 was a bundle that wrote bare purls (177 of 178 rows). The column half is tested here (`tests/test_software_inventory.py::TestPackage::test_whole_purl_is_stored_as_given`); the parser half stays Proposed until `parse_cyclonedx` lands. |
+| req-computing-core-package-7 | CPE Candidates Are A Schema'd List | Implemented | `cpe_candidates` accepts a list of unique strings each beginning `cpe:2.3:` and refuses anything else; it defaults to the empty list and never repeats `cpe`. Declared in both `FIELD_CRUD_SCHEMA` and `FIELD_VALIDATION_SCHEMA` (a JSON column with no schema is `{type: object}` and blocks strict validation). | `tests/test_software_inventory.py::TestPackage::test_cpe_candidates_default_to_the_empty_list`, `::test_cpe_candidates_hold_a_list_of_cpe23_names`, `::test_cpe_candidates_refuse_anything_else`, `::test_cpe_candidates_never_repeat_cpe`, `::test_cpe_candidates_are_declared_in_both_schemas`. Additive migration `0011`. |
+| req-computing-core-package-8 | One Observation, Never A Join | Proposed | `architecture` holds the one value the document gave for this component (the `arch=` qualifier). No writer concatenates two architectures into one string. | Planned. Found 2026-10-15: the inventory bundle held `aarch64, x86_64` in one column. The release is one node across architectures (above), so the column is the last observation, not a set. The column half is tested here (`tests/test_software_inventory.py::TestPackage::test_architecture_is_one_value_never_a_join`: a joined value is refused); the writer half stays Proposed until `parse_cyclonedx` lands. |
 
 ### Source Package Modeling
 ----
@@ -501,11 +501,11 @@ A `source_package` is the upstream source a package manager builds one or more b
 | field | meaning |
 | --- | --- |
 | `ecosystem` | The package-URL type of the manager that builds it: `apk`, `deb`, `rpm`. Lower-case, an open vocabulary, as for `package`. Identity. |
-| `name`, `version` | As the package manager reports them (the apk `o:` origin name, and the version its members share). Identity. |
+| `name`, `version` | As the package manager reports them: the apk `o:` origin name, and the version of the binary package that names it. Members of one origin do not always share a version (see Observed), so one origin name can be more than one node. Identity. |
 
 The node holds the key and nothing else. `purl`, `cpe`, `license` and `architecture` are facts about an installed binary and stay on the `package`; a source supplies a field of its own only when a source of data does, and none does yet.
 
-**Observed (read 2026-10-15 from the apk database of the tap-web image).** All 101 records carry an `o:` line; they come from 69 source packages, 11 of which build more than one binary package, and every member of an origin shares one version. 47 of the 101 packages are their own origin. The 14 package names in the Trivy alerts collapse to 6 sources (`glibc-2.44`, `python-3.14`, `openssl`, `busybox`, `py3-pip`, `zlib`).
+**Observed (read 2026-10-15 from the apk database of the tap-web image).** All 101 records carry an `o:` line; they come from 69 source packages, 11 of which build more than one binary package. 47 of the 101 packages are their own origin. That older image's members of an origin shared one version; the SBOM of a later tap-web image does not hold to it (read 2026-10-15): of its 70 origin names, `openssl` is 3.6.4-r8 for `libssl3` and `libcrypto3` and 3.6.5-r2 for `openssl` and `openssl-dev`, and `postgresql-18` is 18.6-r5 for five members and 18.6-r4 for four, so the 70 names are 72 `(ecosystem, name, version)` source packages. Anything that joins a scanner finding to a source package must therefore go by the origin NAME, which is what Grype files `libssl3` findings against, and not by the one node a package happens to point at. The 14 package names in the Trivy alerts collapse to 6 sources (`glibc-2.44`, `python-3.14`, `openssl`, `busybox`, `py3-pip`, `zlib`).
 
 **Every package draws the edge, including one that is its own source.** `DERIVES_FROM_SOURCE_PACKAGE` runs `package` to `source_package` even where the origin is the package itself, so a join by source never needs a fallback branch. Ecosystems with no binary/source split (pypi, npm) have no such edge. Nothing in this plugin emits these types yet; a collector or bundle does.
 
@@ -655,7 +655,7 @@ RID: `req-computing-core-package-dependency`
 
 Status: `Proposed`
 
-One edge records which package needs which, as an SBOM's `dependencies[].dependsOn` lists it. George ruled 2026-10-15 that the links become edges "for now": the tap-web SBOM carries 457 of them over 129 components, and every `dependsOn` reference resolves to a listed component (read 2026-10-15).
+One edge records which package needs which, as an SBOM's `dependencies[].dependsOn` lists it. George ruled 2026-10-15 that the links become edges "for now": the tap-web SBOM carries 457 `dependsOn` entries over 129 components, and every one resolves to a listed component and to a package, none to itself (read 2026-10-15). The document lists seven npm packages twice or three times, once per path they were found at, and those are one node each, so the 457 entries are 450 distinct package pairs (read 2026-10-15).
 
 #### Implementation
 
@@ -669,15 +669,15 @@ A reference, not containment: a dependency outlives the package that named it, a
 
 | ACID | Title | Status | Description | Notes |
 | --- | --- | :---: | --- | --- |
-| req-computing-core-package-dependency-1 | The Sentence Connects | Proposed | `REQUIRES_PACKAGE` connects a `package` to a `package`; the reverse and any other endpoint type are refused wherever an endpoint declares its edges. | Planned: `tests/test_software_inventory.py::TestEdges`. |
-| req-computing-core-package-dependency-2 | Plain, Reference, Runtime | Proposed | The edge declares `identity: {discriminators: []}`, has no `property_schema`, carries `tap.computing: runtime`, and retiring a package leaves the packages it required reachable. | Planned. |
+| req-computing-core-package-dependency-1 | The Sentence Connects | Implemented | `REQUIRES_PACKAGE` connects a `package` to a `package`; the reverse and any other endpoint type are refused wherever an endpoint declares its edges. | `::TestEdges::test_the_sentences_connect`, `::test_the_wrong_way_round_or_wrong_type_is_refused` |
+| req-computing-core-package-dependency-2 | Plain, Reference, Runtime | Implemented | The edge declares `identity: {discriminators: []}`, has no `property_schema`, carries `tap.computing: runtime`, and retiring a package leaves the packages it required reachable. | `::TestEdges::test_every_edge_declares_the_plain_identity_and_no_properties`, `::test_retiring_a_package_leaves_the_packages_it_required`, `::test_none_of_them_is_containment` |
 | req-computing-core-package-dependency-3 | No Self-Edge | Proposed | A document listing a component as depending on itself yields no edge. | Planned: `tests/test_sbom_parse.py`. |
 
 ### SBOM Document
 ----
 RID: `req-computing-core-sbom-document`
 
-Status: `Proposed`
+Status: `Implemented`
 
 An `sbom_document` is the record that one SBOM existed: which bytes (by digest), which revision of which lineage, what it described, and who signed it. It is not the SBOM. The grid does not hold the document body; storing and serving the file is tap#1035, and until that lands the digest is how a copy held elsewhere is checked against the grid's record. George ruled the SBOM is not stored in the database (2026-10-15).
 
@@ -706,11 +706,11 @@ Dimension `tap.computing: runtime`. Natural key `(content_digest)`.
 
 | ACID | Title | Status | Description | Notes |
 | --- | --- | :---: | --- | --- |
-| req-computing-core-sbom-document-1 | Keyed By Content Digest | Proposed | `computing_core__sbom_document` declares `NATURAL_KEY = (content_digest)`; the digest is required and must be 64 lower-case hex characters. | Planned: `tests/test_sbom_document.py`. |
-| req-computing-core-sbom-document-2 | Same Bytes, One Node; Revisions Accumulate | Proposed | Ingesting the same bytes twice leaves one node. Ingesting a higher `revision` of the same lineage adds a node and leaves the earlier one. | Planned. |
-| req-computing-core-sbom-document-3 | Verified Is Three-State | Proposed | `verified` accepts `true`, `false` or `null` (not checked); `signer` is refused non-empty unless `verified` is `true`. | Planned. |
-| req-computing-core-sbom-document-4 | Describes A Host | Proposed | `DESCRIBES_HOST` connects an `sbom_document` to a `host`; the reverse and other endpoint types are refused; it declares the plain identity and no properties. | Planned. |
-| req-computing-core-sbom-document-5 | No Document Body | Proposed | No column holds the document or its components, and a create carrying one is refused. | Planned. Sits beside `req-computing-core-models-7`. |
+| req-computing-core-sbom-document-1 | Keyed By Content Digest | Implemented | `computing_core__sbom_document` declares `NATURAL_KEY = (content_digest)`; the digest is required and must be 64 lower-case hex characters. | `tests/test_sbom_document.py::TestKeyedByContentDigest` |
+| req-computing-core-sbom-document-2 | Same Bytes, One Node; Revisions Accumulate | Implemented | Ingesting the same bytes twice leaves one node. Ingesting a higher `revision` of the same lineage adds a node and leaves the earlier one. | `tests/test_sbom_document.py::TestRevisionsAccumulate` |
+| req-computing-core-sbom-document-3 | Verified Is Three-State | Implemented | `verified` accepts `true`, `false` or `null` (not checked); `signer` is refused non-empty unless `verified` is `true`. | `tests/test_sbom_document.py::TestVerifiedIsThreeState` |
+| req-computing-core-sbom-document-4 | Describes A Host | Implemented | `DESCRIBES_HOST` connects an `sbom_document` to a `host`; the reverse and other endpoint types are refused; it declares the plain identity and no properties. | `tests/test_sbom_document.py::TestDescribesHost`; the edge also in `tests/test_software_inventory.py::TestEdges` |
+| req-computing-core-sbom-document-5 | No Document Body | Implemented | No column holds the document or its components, and a create carrying one is refused. | `tests/test_sbom_document.py::TestNoDocumentBody`. Sits beside `req-computing-core-models-7`. |
 
 ### SBOM Parser
 ----
@@ -722,7 +722,7 @@ Status: `Proposed`
 
 #### Implementation
 
-**Pure.** The module (`tap_plugin/computing_core/sbom/`) imports no Django, opens no socket or file and reads no clock. Its caller supplies the bytes and the `host_id` of the host the document describes (the caller resolves it, as github_core resolves its own endpoints). The batch uses the grid's own natural-key identity derivation for entity ids, never a local scheme, so the same bytes give the same batch on any machine.
+**Pure.** The module (`tap_plugin/computing_core/sbom/`) imports no Django, opens no socket or file and reads no clock. Its caller supplies the bytes and the `host_id` of the host the document describes (the caller resolves it, as github_core resolves its own endpoints). The batch carries no entity id. The grid does not derive ids from keys: `Entity.id` is always an assigned UUIDv7 and a row is found again by its natural key (`tap_grid/natural_key.py`), so no Django-free derivation exists to call and the parser invents none. Every node row names itself by a batch-local `ref` (the grid's `identity_lock_key` over the type and its natural-key values, a label that never becomes an id) and carries its properties; every edge row names its endpoints by `from_ref` / `to_ref`, and the host by the `host_id` the caller gave. The GRIFT importer resolves each ref against the grid's natural key (`req-grid-import-grift-identity-3`), so the same bytes give the same batch on any machine and the same document imported twice is a replace, not a duplicate.
 
 **Untrusted input.** The document is data from outside. Size, nesting depth and component count are capped; a document over a cap is refused with the cap named, not truncated.
 
@@ -733,7 +733,7 @@ Status: `Proposed`
 | purl type `apk`, `deb`, `rpm`, `pypi`, `npm`, `golang`, `cargo`, `gem`, `maven`, `nuget` | `package`: `ecosystem` is the purl type, `name`, `version`, whole `purl`, `architecture` from `arch=`, `cpe`, `cpe_candidates` from the repeated `syft:cpe23` properties that differ from `cpe`, `license` as an SPDX expression, `source_document` `sbom` |
 | purl type `generic` or `github`, or no purl | `library` (built or vendored outside a package manager), `source_kind` null because the document does not say how it was built |
 | `type: operating-system` | `operating_system`: `os_id` from `syft:distro:id`, `version_id` from `syft:distro:versionID`, `build_id` empty |
-| `syft:metadata:originPackage` (all 102 apk components carry it; the purl `upstream=` qualifier appears on the 54 whose origin differs from their name) | `source_package` of the package's ecosystem, the origin's name, and the package's own version (every member of an origin shares one version, read 2026-10-15 from the tap-web apk database); `DERIVES_FROM_SOURCE_PACKAGE` for every apk package, a package that is its own origin included |
+| `syft:metadata:originPackage` (all 102 apk components carry it; the purl `upstream=` qualifier appears on the 54 whose origin differs from their name) | `source_package` of the package's ecosystem, the origin's name, and the package's own version; `DERIVES_FROM_SOURCE_PACKAGE` for every apk package, a package that is its own origin included. Members of one origin do not always share a version (read 2026-10-15 from the corpus: `openssl` is 3.6.4-r8 and 3.6.5-r2, `postgresql-18` is 18.6-r4 and 18.6-r5), so 70 origin names give 72 source packages |
 | `dependencies[].dependsOn` | `REQUIRES_PACKAGE` (`req-computing-core-package-dependency`) |
 | the whole document | `sbom_document` with `DESCRIBES_HOST` to `host_id`; the host also gets `INSTALLS_PACKAGE` to each package and `RUNS_OPERATING_SYSTEM` |
 
@@ -751,8 +751,8 @@ CycloneDX `bom-ref` is a handle inside one document and is used only to resolve 
 | --- | --- | :---: | --- | --- |
 | req-computing-core-sbom-parse-1 | Pure And Django-Free | Proposed | The `sbom` package imports with Django's modules blocked, and a call opens no socket or file. | Planned: `tests/test_sbom_parse.py`. "Unset settings" is not "no Django": the test blocks the import. |
 | req-computing-core-sbom-parse-2 | Deterministic | Proposed | Parsing the same bytes twice, and parsing a document with its components reordered, yields identical batches. | Planned. |
-| req-computing-core-sbom-parse-3 | The Real Document | Proposed | The corpus document yields 102 apk, 71 pypi and 15 npm packages, 3 libraries (`openssl-fips-provider`, `uv`, `uvx`), 1 operating system (`wolfi` `20230201`), 70 source packages, 1 `sbom_document`, 457 `REQUIRES_PACKAGE` edges, and no unresolved reference. | Planned. Counts read 2026-10-15 from the document. The 70 source packages are the distinct `syft:metadata:originPackage` values; the apk database read earlier counted 69 on an older image, and the document is what this requirement establishes. |
-| req-computing-core-sbom-parse-4 | Source Packages Are Drawn | Proposed | Every apk package draws `DERIVES_FROM_SOURCE_PACKAGE`; `libssl3`, `libcrypto3` and `openssl` resolve to one `openssl` source package; a package with no stated origin is its own origin. | Planned. |
+| req-computing-core-sbom-parse-3 | The Real Document | Proposed | The corpus document yields 102 apk, 71 pypi and 7 npm packages, 3 libraries (`openssl-fips-provider`, `uv`, `uvx`), 1 operating system (`wolfi` `20230201`), 72 source packages, 1 `sbom_document`, 450 `REQUIRES_PACKAGE` edges, and no unresolved reference. | Planned. Counts read 2026-10-15 from the document. The 72 source packages are the distinct `(origin name, version)` pairs of the 102 apk components; the 70 distinct `syft:metadata:originPackage` values are the count of names (two names, `openssl` and `postgresql-18`, are two versions each). The 7 npm packages are 15 components: seven packages are listed 2-3 times (the same purl under different `package-id`s), which `Duplicates` makes one node each. The 450 edges are the 457 `dependsOn` entries with those duplicates collapsed. The apk database read earlier counted 69 sources on an older image. |
+| req-computing-core-sbom-parse-4 | Source Packages Are Drawn | Proposed | Every apk package draws `DERIVES_FROM_SOURCE_PACKAGE`; a package with no stated origin is its own origin. `libssl3` and `libcrypto3` (3.6.4-r8) resolve to one `openssl` 3.6.4-r8 source package, the same node, and NOT to the `openssl` 3.6.5-r2 source package that the `openssl` and `openssl-dev` packages resolve to; likewise `postgresql-18` resolves to two source packages (18.6-r4, 18.6-r5). | Planned. Corrected 2026-10-15: this row first said `libssl3`, `libcrypto3` and `openssl` resolve to one source package, on the claim that an origin's members share a version, which the corpus document contradicts. A join from a finding to a source package goes by origin name. |
 | req-computing-core-sbom-parse-5 | Matching Fields Survive | Proposed | `libssl3` keeps its purl with `arch`, `distro` and `upstream`, its `cpe`, and its three `cpe_candidates`; `openssl-fips-provider` keeps its `cpe`. | Planned. The reason: `req-computing-core-package-6`. |
 | req-computing-core-sbom-parse-6 | Unreadable Is Refused, Not Empty | Proposed | A non-JSON body, a body over the size cap, one nested past the depth cap, and a document that is not CycloneDX each raise `SbomParseError`; none returns an empty batch. | Planned. |
 | req-computing-core-sbom-parse-7 | CycloneDX 1.4 To 1.7 Only | Proposed | `specVersion` 1.4, 1.5, 1.6 and 1.7 parse; 1.3 and earlier and SPDX are refused naming the format. SPDX 3 is a later requirement. | Planned. Syft v1.46+ can emit SPDX 3.0.1 and Grype 0.120.1 reads it; Trivy 0.76.0 reads CycloneDX 1.7 but not SPDX 3 (both read 2026-10-15). |
