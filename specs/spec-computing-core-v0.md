@@ -39,6 +39,10 @@ Networking is an especially important part of this layer. v0 should model the st
 | req-computing-core-operating-system | [Operating System Modeling](#operating-system-modeling) | Implemented | `operating_system`: keyed `(os_id, version_id, build_id)` so a rolling distro's placeholder VERSION_ID does not merge builds |
 | req-computing-core-crypto-provider | [Crypto Provider Modeling](#crypto-provider-modeling) | Implemented | `crypto_provider`: a cryptographic implementation found in an artifact and its FIPS-boundary disposition; no key material |
 | req-computing-core-inventory-edges | [Software Inventory Edges](#software-inventory-edges) | Implemented | `INSTALLS_PACKAGE`, `DERIVES_FROM_SOURCE_PACKAGE`, `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM`, `CARRIES_CRYPTO_PROVIDER`; all references |
+| req-computing-core-package-dependency | [Package Dependencies](#package-dependencies) | Proposed | `REQUIRES_PACKAGE`: the dependency links an SBOM lists between packages; a reference, no properties |
+| req-computing-core-sbom-document | [SBOM Document](#sbom-document) | Proposed | `sbom_document`: the record that one SBOM existed (content digest, revision lineage, signer), never its body; `DESCRIBES_HOST` |
+| req-computing-core-sbom-parse | [SBOM Parser](#sbom-parser) | Proposed | A pure, Django-free CycloneDX 1.4-1.7 parser: bytes in, a typed batch of packages, libraries, source packages, the operating system and edges out; fails closed |
+| req-computing-core-sbom-build | [SBOM Builder](#sbom-builder) | Proposed | The mirror of the parser: a throwaway CycloneDX document built from packages on the grid, carrying what a scanner matches on |
 | req-computing-core-protocols | [Protocol Scope](#protocol-scope) | Proposed | v0 stops just above layer four with generic application protocol modeling |
 | req-computing-core-edges | [Edge Types](#edge-types) | Proposed | Expressive edge family for structural and runtime relationships |
 | req-computing-core-reference | [Reference Data](#reference-data) | Proposed | Dimension nodes and any seed taxonomy data |
@@ -443,7 +447,8 @@ A `package` is one release of something a package manager installs: an apk of a 
 | `ecosystem` | The package-URL type of the manager: `apk`, `deb`, `rpm`, `pypi`, `npm`, `generic`. Lower-case, an open vocabulary (the purl spec adds types). Identity. |
 | `name`, `version` | As the package manager reports them. Identity. |
 | `architecture` | `x86_64`, `aarch64`, `noarch`; empty where the ecosystem has none. The value of the observation that last wrote it. Not identity. |
-| `purl`, `cpe`, `license` | CycloneDX component fields of the same names. `license` holds an SPDX expression. |
+| `purl`, `cpe`, `license` | CycloneDX component fields of the same names. `license` holds an SPDX expression. `purl` is kept whole, qualifiers included (`arch`, `distro`, `upstream`); nothing trims or rebuilds it. |
+| `cpe_candidates` | The other CPE 2.3 names a document lists for the same component (Syft writes them as repeated `syft:cpe23` properties: `libssl3` carries three beside its `cpe`). A list of strings, each starting `cpe:2.3:`, never repeating `cpe`; empty where the document lists none. Not identity. |
 | `source_document` | Which document the most recent observation came from: `sbom`, `uv.lock`, `supplemental`. Not identity. |
 
 The names follow CycloneDX components so an SBOM row maps in without translation. CycloneDX `bom-ref` is not stored: it is a document-local handle, not identity. File hashes are not stored: no inventory column needs them, and the SBOM remains the place that carries them.
@@ -461,6 +466,27 @@ The names follow CycloneDX components so an SBOM row maps in without translation
 | req-computing-core-package-3 | Ecosystem Is A Purl Type | Implemented | `ecosystem` is a lower-case purl type; an upper-case or empty value is refused. | `::TestPackage::test_ecosystem_is_a_purl_type` |
 | req-computing-core-package-4 | Runtime Dimension | Implemented | A package carries `tap.computing: runtime`. | `::TestPackage::test_create_and_display` |
 | req-computing-core-package-5 | Findings Attach Without A New Edge | Implemented | A `compliance_core` finding attaches to a package or a library with `CARRIES_COMPLIANCE_FINDING`; this plugin adds no finding edge. | `::TestEdges::test_a_scanner_finding_attaches_to_a_package_or_a_library` runs only on a grid with compliance_core installed. |
+
+#### Why the purl, CPE and candidates are stored whole (2026-10-15)
+
+A scanner matches on exactly what a document carries, so a thinner row finds less. Measured 2026-10-15 with Grype v0.120.1 on the tap-web SBOM of image `sha256:a9149a88…` (192 components; the full document gives 91 matches over 27 vulnerability ids), rebuilding the document from only the fields named:
+
+| fields given to the scanner | matches | lost |
+| --- | --- | --- |
+| name, version, purl with `upstream=`, `cpe`, `syft:cpe23` candidates, distro | 91 | none |
+| the same without the candidates | 89 | 2 (`python-3.14`) |
+| the same without `cpe` | 50 | 41 (the self-built `openssl-fips-provider` matches by CPE alone) |
+| purl with the `upstream=` qualifier removed, no `cpe` | 12 | 79 (`libssl3`, `libcrypto3`, glibc and python drop out, because Wolfi advisories are filed against the origin package) |
+
+The distro resolved from the purl `distro=` qualifier even with no operating-system component, so the operating system is stored for the graph, not for the scan.
+
+#### Acceptance Criteria (package, continued)
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-package-6 | Whole Purl Kept | Proposed | The `purl` column holds the purl exactly as the document gave it, `arch`, `distro` and `upstream` qualifiers included. The parser does not trim, normalise or rebuild it. | Planned: `tests/test_sbom_parse.py::test_purl_qualifiers_survive`. The 1024-character column already holds them; the gap found 2026-10-15 was a bundle that wrote bare purls (177 of 178 rows). |
+| req-computing-core-package-7 | CPE Candidates Are A Schema'd List | Proposed | `cpe_candidates` accepts a list of unique strings each beginning `cpe:2.3:` and refuses anything else; it defaults to the empty list and never repeats `cpe`. Declared in both `FIELD_CRUD_SCHEMA` and `FIELD_VALIDATION_SCHEMA` (a JSON column with no schema is `{type: object}` and blocks strict validation). | Planned: `tests/test_software_inventory.py::TestPackage::test_cpe_candidates_*`. Additive migration. |
+| req-computing-core-package-8 | One Observation, Never A Join | Proposed | `architecture` holds the one value the document gave for this component (the `arch=` qualifier). No writer concatenates two architectures into one string. | Planned. Found 2026-10-15: the inventory bundle held `aarch64, x86_64` in one column. The release is one node across architectures (above), so the column is the last observation, not a set. |
 
 ### Source Package Modeling
 ----
@@ -622,6 +648,141 @@ There is no operating-system-to-package edge: which packages an OS comprises is 
 | req-computing-core-inventory-edges-2 | Wrong Direction Or Type Is Refused | Implemented | The reverse of each edge, and an edge of the wrong endpoint type, are refused wherever an endpoint type declares its edges (`host`, `package`, `source_package`, `library`, `operating_system`, `crypto_provider`). | `::TestEdges::test_the_wrong_way_round_or_wrong_type_is_refused`. The grid permits an edge when either the node's declaration or the edge definition allows each side, so `program`, which declares no edges, leaves its side open; the edge definition's `sources` is then a grant, not a restriction. |
 | req-computing-core-inventory-edges-3 | References, Not Containment | Implemented | Retiring a host with `cascade="contained"` leaves the package, source package, operating system, library and provider reachable from it. | `::TestEdges::test_none_of_them_is_containment` |
 | req-computing-core-inventory-edges-4 | Plain Identity, No Properties | Implemented | Each edge declares `identity: {discriminators: []}` (found again by type, source and target), has no `property_schema`, and carries `tap.computing: runtime`. | `::TestEdges::test_every_edge_declares_the_plain_identity_and_no_properties` |
+
+### Package Dependencies
+----
+RID: `req-computing-core-package-dependency`
+
+Status: `Proposed`
+
+One edge records which package needs which, as an SBOM's `dependencies[].dependsOn` lists it. George ruled 2026-10-15 that the links become edges "for now": the tap-web SBOM carries 457 of them over 129 components, and every `dependsOn` reference resolves to a listed component (read 2026-10-15).
+
+#### Implementation
+
+| edge | sentence | justification |
+| --- | --- | --- |
+| `REQUIRES_PACKAGE__computing_core` | `<package> REQUIRES_PACKAGE <package>` | the document's dependency graph. `DEPENDS_ON` would end in a preposition (`req-tap-plugin-edge-naming`), so the object noun is part of the slug |
+
+A reference, not containment: a dependency outlives the package that named it, and none is in any model's `CONTAINMENT_EDGES`. The edge has no properties and declares the plain identity (`discriminators: []`); it carries `tap.computing: runtime`. A package is never drawn as requiring itself, and a `dependsOn` that names a library, a program or a component the document does not list is not drawn; the parser counts it in its report (`req-computing-core-sbom-parse-8`) instead of inventing an endpoint.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-package-dependency-1 | The Sentence Connects | Proposed | `REQUIRES_PACKAGE` connects a `package` to a `package`; the reverse and any other endpoint type are refused wherever an endpoint declares its edges. | Planned: `tests/test_software_inventory.py::TestEdges`. |
+| req-computing-core-package-dependency-2 | Plain, Reference, Runtime | Proposed | The edge declares `identity: {discriminators: []}`, has no `property_schema`, carries `tap.computing: runtime`, and retiring a package leaves the packages it required reachable. | Planned. |
+| req-computing-core-package-dependency-3 | No Self-Edge | Proposed | A document listing a component as depending on itself yields no edge. | Planned: `tests/test_sbom_parse.py`. |
+
+### SBOM Document
+----
+RID: `req-computing-core-sbom-document`
+
+Status: `Proposed`
+
+An `sbom_document` is the record that one SBOM existed: which bytes (by digest), which revision of which lineage, what it described, and who signed it. It is not the SBOM. The grid does not hold the document body; storing and serving the file is tap#1035, and until that lands the digest is how a copy held elsewhere is checked against the grid's record. George ruled the SBOM is not stored in the database (2026-10-15).
+
+#### Implementation
+
+| field | meaning |
+| --- | --- |
+| `content_digest` | SHA-256 of the document's exact bytes, lower-case hex. Identity, and the idempotency key: the same bytes are the same node. |
+| `format`, `spec_version` | `cyclonedx` and the document's `specVersion` (`1.7`). SPDX is not read yet (`req-computing-core-sbom-parse-7`). |
+| `serial_number` | The document's `serialNumber` (`urn:uuid:…`). With `subject_digest`, names the lineage. |
+| `revision` | The document's `version`, an integer from 1. A rescan of one image is the next revision of the same lineage, so a later scan is a higher number, not a new unrelated document. |
+| `subject_digest` | The digest of the artifact described (an image digest `sha256:…`), from the attestation subject or the document's own `metadata.component`; empty where neither names one. |
+| `produced_at`, `generator` | `metadata.timestamp`, and the first tool as `name@version` (`syft@1.51.0`). |
+| `component_count` | How many components the document lists. |
+| `signer`, `verified` | The identity of the verified signer, and whether verification ran: `true` verified, `false` ran and failed, `null` not checked. `signer` is non-empty only when `verified` is `true`. Verification happens in the caller against the signer trust list; this node records its outcome and does not decide it. |
+
+**Lineage and "current".** Documents sharing `(subject_digest, serial_number)` are one lineage; the current one is the highest `revision`. All earlier revisions are kept (ruled 2026-10-15: the files are not in the database, so a retained row costs one node). Two different byte strings that claim the same `(serial_number, revision)` are two nodes, because their digests differ; the grid records the clash and does not pick between them.
+
+**No membership edges.** A document does not draw an edge to each package it lists: that is about 190 edges per revision, repeated every night for no new fact. What a host installs is its `INSTALLS_PACKAGE` edges, and `source_document` on the package names the kind of document that last observed it. The cost is that "exactly what revision N listed" is answered from the file, not the grid.
+
+**One edge.** `DESCRIBES_HOST__computing_core`: `<sbom_document> DESCRIBES_HOST <host>`, the host (a container image's `host` with `kind: container`) the document inventories. A reference, no properties, plain identity, `tap.computing: runtime`, not containment.
+
+Dimension `tap.computing: runtime`. Natural key `(content_digest)`.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-sbom-document-1 | Keyed By Content Digest | Proposed | `computing_core__sbom_document` declares `NATURAL_KEY = (content_digest)`; the digest is required and must be 64 lower-case hex characters. | Planned: `tests/test_sbom_document.py`. |
+| req-computing-core-sbom-document-2 | Same Bytes, One Node; Revisions Accumulate | Proposed | Ingesting the same bytes twice leaves one node. Ingesting a higher `revision` of the same lineage adds a node and leaves the earlier one. | Planned. |
+| req-computing-core-sbom-document-3 | Verified Is Three-State | Proposed | `verified` accepts `true`, `false` or `null` (not checked); `signer` is refused non-empty unless `verified` is `true`. | Planned. |
+| req-computing-core-sbom-document-4 | Describes A Host | Proposed | `DESCRIBES_HOST` connects an `sbom_document` to a `host`; the reverse and other endpoint types are refused; it declares the plain identity and no properties. | Planned. |
+| req-computing-core-sbom-document-5 | No Document Body | Proposed | No column holds the document or its components, and a create carrying one is refused. | Planned. Sits beside `req-computing-core-models-7`. |
+
+### SBOM Parser
+----
+RID: `req-computing-core-sbom-parse`
+
+Status: `Proposed`
+
+`parse_cyclonedx(data: bytes, *, host_id) -> SbomBatch` turns one CycloneDX JSON document into the grid's inventory: packages, libraries, source packages, the operating system, the `sbom_document` record and the edges between them. George ruled 2026-10-15 that SBOMs become the source of truth for packages and that this parser lives in computing_core, so any collector, action or other pipeline can call it; the github_core collector is its first caller, finding and downloading the document and handing over the bytes.
+
+#### Implementation
+
+**Pure.** The module (`tap_plugin/computing_core/sbom/`) imports no Django, opens no socket or file and reads no clock. Its caller supplies the bytes and the `host_id` of the host the document describes (the caller resolves it, as github_core resolves its own endpoints). The batch uses the grid's own natural-key identity derivation for entity ids, never a local scheme, so the same bytes give the same batch on any machine.
+
+**Untrusted input.** The document is data from outside. Size, nesting depth and component count are capped; a document over a cap is refused with the cap named, not truncated.
+
+**Mapping.** A component is classified by its purl type, not by CycloneDX's `type`, because Syft types `uv` as `application` and the self-built provider as `library`:
+
+| in the document | on the grid |
+| --- | --- |
+| purl type `apk`, `deb`, `rpm`, `pypi`, `npm`, `golang`, `cargo`, `gem`, `maven`, `nuget` | `package`: `ecosystem` is the purl type, `name`, `version`, whole `purl`, `architecture` from `arch=`, `cpe`, `cpe_candidates` from the repeated `syft:cpe23` properties that differ from `cpe`, `license` as an SPDX expression, `source_document` `sbom` |
+| purl type `generic` or `github`, or no purl | `library` (built or vendored outside a package manager), `source_kind` null because the document does not say how it was built |
+| `type: operating-system` | `operating_system`: `os_id` from `syft:distro:id`, `version_id` from `syft:distro:versionID`, `build_id` empty |
+| `syft:metadata:originPackage` (all 102 apk components carry it; the purl `upstream=` qualifier appears on the 54 whose origin differs from their name) | `source_package` of the package's ecosystem, the origin's name, and the package's own version (every member of an origin shares one version, read 2026-10-15 from the tap-web apk database); `DERIVES_FROM_SOURCE_PACKAGE` for every apk package, a package that is its own origin included |
+| `dependencies[].dependsOn` | `REQUIRES_PACKAGE` (`req-computing-core-package-dependency`) |
+| the whole document | `sbom_document` with `DESCRIBES_HOST` to `host_id`; the host also gets `INSTALLS_PACKAGE` to each package and `RUNS_OPERATING_SYSTEM` |
+
+CycloneDX `bom-ref` is a handle inside one document and is used only to resolve `dependencies`; it is not stored. File hashes are not stored (3 of 192 components carry one in the tap-web document).
+
+**Duplicates.** A component listed twice with one `(ecosystem, name, version)` is one node. If the copies carry different purls, the lexicographically smallest is kept and the report names the others, so the result does not depend on document order.
+
+**Fail closed.** A document the parser cannot read raises `SbomParseError` naming why. It never returns an empty batch, because an empty batch reads as "this host has no software".
+
+**The corpus.** The test corpus holds the attested tap-web document itself, unmodified (image `sha256:a9149a88…`, `specVersion` 1.7, `serialNumber urn:uuid:90f083a0-…`, 192 components, Syft 1.51.0), so every number below is checkable.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-sbom-parse-1 | Pure And Django-Free | Proposed | The `sbom` package imports with Django's modules blocked, and a call opens no socket or file. | Planned: `tests/test_sbom_parse.py`. "Unset settings" is not "no Django": the test blocks the import. |
+| req-computing-core-sbom-parse-2 | Deterministic | Proposed | Parsing the same bytes twice, and parsing a document with its components reordered, yields identical batches. | Planned. |
+| req-computing-core-sbom-parse-3 | The Real Document | Proposed | The corpus document yields 102 apk, 71 pypi and 15 npm packages, 3 libraries (`openssl-fips-provider`, `uv`, `uvx`), 1 operating system (`wolfi` `20230201`), 70 source packages, 1 `sbom_document`, 457 `REQUIRES_PACKAGE` edges, and no unresolved reference. | Planned. Counts read 2026-10-15 from the document. The 70 source packages are the distinct `syft:metadata:originPackage` values; the apk database read earlier counted 69 on an older image, and the document is what this requirement establishes. |
+| req-computing-core-sbom-parse-4 | Source Packages Are Drawn | Proposed | Every apk package draws `DERIVES_FROM_SOURCE_PACKAGE`; `libssl3`, `libcrypto3` and `openssl` resolve to one `openssl` source package; a package with no stated origin is its own origin. | Planned. |
+| req-computing-core-sbom-parse-5 | Matching Fields Survive | Proposed | `libssl3` keeps its purl with `arch`, `distro` and `upstream`, its `cpe`, and its three `cpe_candidates`; `openssl-fips-provider` keeps its `cpe`. | Planned. The reason: `req-computing-core-package-6`. |
+| req-computing-core-sbom-parse-6 | Unreadable Is Refused, Not Empty | Proposed | A non-JSON body, a body over the size cap, one nested past the depth cap, and a document that is not CycloneDX each raise `SbomParseError`; none returns an empty batch. | Planned. |
+| req-computing-core-sbom-parse-7 | CycloneDX 1.4 To 1.7 Only | Proposed | `specVersion` 1.4, 1.5, 1.6 and 1.7 parse; 1.3 and earlier and SPDX are refused naming the format. SPDX 3 is a later requirement. | Planned. Syft v1.46+ can emit SPDX 3.0.1 and Grype 0.120.1 reads it; Trivy 0.76.0 reads CycloneDX 1.7 but not SPDX 3 (both read 2026-10-15). |
+| req-computing-core-sbom-parse-8 | Skips Are Counted | Proposed | A component with no name or version, and a `dependsOn` that names a non-package or an unlisted component, are not silently dropped: the report lists each count with its reason. | Planned. |
+| req-computing-core-sbom-parse-9 | Digest Over The Exact Bytes | Proposed | `sbom_document.content_digest` is the SHA-256 of the bytes passed in, not of a re-serialisation. | Planned. |
+
+### SBOM Builder
+----
+RID: `req-computing-core-sbom-build`
+
+Status: `Proposed`
+
+`build_cyclonedx(packages, libraries, operating_system) -> bytes` is the parser run backwards: it turns packages on the grid into a CycloneDX document a scanner can read. It exists for the Grype plugin, which builds a document from what the grid says is deployed, scans it, and writes the findings back onto the same packages. The document is a throwaway input; it is not stored (tap#1035), and the caller chooses which packages go in (every package a host installs, say).
+
+#### Implementation
+
+**CycloneDX 1.6.** Every reader tried takes 1.6. Trivy 0.70.0 could not decode 1.7 ("invalid specification version", the cause of tap#1036), and Grype read the 1.6 documents built for the measurement above.
+
+**What it writes.** Per package: `type: library`, `name`, `version`, the whole `purl`, `cpe`, and each `cpe_candidates` entry as a `syft:cpe23` property, because Grype reads those (the build in the table above recovered all 91 findings with them and 89 without). Libraries are included, since the provider matches on its CPE alone. The operating system goes in as an `operating-system` component with `syft:distro:id` and `syft:distro:versionID`. `REQUIRES_PACKAGE` becomes `dependencies`. `bom-ref` is the purl where there is one and a deterministic handle where there is not.
+
+**What it never does.** It writes nothing to the grid and nothing to disk, and the same inputs give the same bytes.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-sbom-build-1 | The Matching Fields Are Emitted | Proposed | The output carries each package's whole purl, `cpe`, every `cpe_candidates` entry as `syft:cpe23`, the libraries, and the operating system's distro properties. | Planned: `tests/test_sbom_build.py`. |
+| req-computing-core-sbom-build-2 | Round Trip | Proposed | `parse(build(parse(corpus)))` yields the same packages, libraries, source packages and edges as `parse(corpus)`. | Planned. The source-package edges survive through the `upstream=` qualifier, so the builder must write it. |
+| req-computing-core-sbom-build-3 | The Scanner Agrees | Proposed | Grype run on the built document matches the same 91 findings over 27 vulnerability ids as on the corpus document. | Planned, behind a marker that skips when the Grype image is absent. Measured by hand 2026-10-15 on an equivalent hand-built document: 91 matches, 27 ids, none missing and none extra. |
+| req-computing-core-sbom-build-4 | Throwaway And Deterministic | Proposed | The function performs no database write and no file write, and two calls on the same inputs return identical bytes. | Planned. |
 
 ### Protocol Scope
 ----
