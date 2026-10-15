@@ -50,6 +50,10 @@ class Package(BaseModel):
             "nodes": [{"type": "computing_core__crypto_provider"}],
             "edges": [{"type": "CARRIES_CRYPTO_PROVIDER__computing_core"}],
         },
+        {
+            "nodes": [{"type": "computing_core__source_package"}],
+            "edges": [{"type": "DERIVES_FROM_SOURCE_PACKAGE__computing_core"}],
+        },
     ]
     INBOUND_EDGES: ClassVar[list[dict[str, Any]]] = [
         {"nodes": [{"type": "computing_core__host"}], "edges": [{"type": "INSTALLS_PACKAGE__computing_core"}]},

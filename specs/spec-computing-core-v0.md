@@ -34,10 +34,11 @@ Networking is an especially important part of this layer. v0 should model the st
 | req-computing-core-host | [Host Modeling](#host-modeling) | Implemented | One `host` type for every OS-bearing environment; physical-versus-virtual is `kind`; keyed `(realm, stable_id)` |
 | req-computing-core-os-accounts | [OS Accounts And Groups](#os-accounts-and-groups) | Implemented | `os_user` / `os_group` live in one host's account database, keyed to it; `user` retired |
 | req-computing-core-package | [Package Modeling](#package-modeling) | Implemented | `package`: one release of an apk/deb/rpm/pypi/npm package, keyed `(ecosystem, name, version)` |
+| req-computing-core-source-package | [Source Package Modeling](#source-package-modeling) | Implemented | `source_package`: the source a binary package is built from (an apk origin), keyed `(ecosystem, name, version)`; every package draws `DERIVES_FROM_SOURCE_PACKAGE` to it |
 | req-computing-core-library | [Library Modeling](#library-modeling) | Implemented | `library`: code built or vendored outside a package manager; whether it carries cryptography is an edge, not a column |
 | req-computing-core-operating-system | [Operating System Modeling](#operating-system-modeling) | Implemented | `operating_system`: keyed `(os_id, version_id, build_id)` so a rolling distro's placeholder VERSION_ID does not merge builds |
 | req-computing-core-crypto-provider | [Crypto Provider Modeling](#crypto-provider-modeling) | Implemented | `crypto_provider`: a cryptographic implementation found in an artifact and its FIPS-boundary disposition; no key material |
-| req-computing-core-inventory-edges | [Software Inventory Edges](#software-inventory-edges) | Implemented | `INSTALLS_PACKAGE`, `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM`, `CARRIES_CRYPTO_PROVIDER`; all references |
+| req-computing-core-inventory-edges | [Software Inventory Edges](#software-inventory-edges) | Implemented | `INSTALLS_PACKAGE`, `DERIVES_FROM_SOURCE_PACKAGE`, `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM`, `CARRIES_CRYPTO_PROVIDER`; all references |
 | req-computing-core-protocols | [Protocol Scope](#protocol-scope) | Proposed | v0 stops just above layer four with generic application protocol modeling |
 | req-computing-core-edges | [Edge Types](#edge-types) | Proposed | Expressive edge family for structural and runtime relationships |
 | req-computing-core-reference | [Reference Data](#reference-data) | Proposed | Dimension nodes and any seed taxonomy data |
@@ -176,7 +177,7 @@ The initial v0 model set is:
 | Category | Models | Notes |
 | --- | --- | --- |
 | Compute | `host`; planned: `virtual_machine`, `container` | `host` is built (one type, `kind` says which environment); the two planned rows can still be minted as specialisations if a consumer needs them |
-| Runtime | `operating_system`, `program`, `process`; built since 2026-10-14: `operating_system`, `package`, `library`, `crypto_provider` | Operating context plus executable/runtime units, and the software inventory of a host: see [Package](#package-modeling), [Library](#library-modeling), [Operating System](#operating-system-modeling), [Crypto Provider](#crypto-provider-modeling) |
+| Runtime | `operating_system`, `program`, `process`; built since 2026-10-14: `operating_system`, `package`, `library`, `crypto_provider`; since 2026-10-15 `source_package` | Operating context plus executable/runtime units, and the software inventory of a host: see [Package](#package-modeling), [Source Package](#source-package-modeling), [Library](#library-modeling), [Operating System](#operating-system-modeling), [Crypto Provider](#crypto-provider-modeling) |
 | Storage | `storage_volume`, `filesystem`, `file` | Generic storage abstraction plus mounted and contained data |
 | Networking | `network_interface`, `ip_address`, `ip_subnet`, `port` | Stable IP-stack primitives |
 | Transport/Protocol | `tcp_connection`, `application_protocol` | Session node plus protocol abstraction above layer four |
@@ -189,6 +190,7 @@ Definitions and intent:
 - **container**: a containerized execution environment
 - **operating_system**: the OS environment associated with a virtual machine or container host; built, keyed by os-release `ID`, `VERSION_ID` and a build identifier ([Operating System Modeling](#operating-system-modeling))
 - **package**: one release of a package a package manager installs ([Package Modeling](#package-modeling))
+- **source_package**: the source a binary package is built from; an apk origin, a deb `Source:`, an rpm source RPM ([Source Package Modeling](#source-package-modeling))
 - **library**: code an application imports or links that was built or vendored outside a package manager ([Library Modeling](#library-modeling))
 - **crypto_provider**: a cryptographic implementation found in an artifact, with its FIPS-boundary disposition ([Crypto Provider Modeling](#crypto-provider-modeling))
 - **program**: the execution of an application concept that may spawn multiple processes and rely on executable/configuration/data files
@@ -460,6 +462,38 @@ The names follow CycloneDX components so an SBOM row maps in without translation
 | req-computing-core-package-4 | Runtime Dimension | Implemented | A package carries `tap.computing: runtime`. | `::TestPackage::test_create_and_display` |
 | req-computing-core-package-5 | Findings Attach Without A New Edge | Implemented | A `compliance_core` finding attaches to a package or a library with `CARRIES_COMPLIANCE_FINDING`; this plugin adds no finding edge. | `::TestEdges::test_a_scanner_finding_attaches_to_a_package_or_a_library` runs only on a grid with compliance_core installed. |
 
+### Source Package Modeling
+----
+RID: `req-computing-core-source-package`
+
+Status: `Implemented`
+
+A `source_package` is the upstream source a package manager builds one or more binary packages from: an apk origin such as `glibc-2.44` or `python-3.14`, a deb `Source:`, an rpm source RPM. A vulnerability scanner reports against the binary `package`, but the thing to fix is the source: Trivy reports the same glibc CVEs against five installed apks and the same Python CVE against four, which a per-component count reads as five or four components (computing-core#38). George chose a node and an edge over a field on `package`, so counts and joins stay in Gryphon, whose aggregate needs an edge in the `MATCH`.
+
+#### Implementation
+
+| field | meaning |
+| --- | --- |
+| `ecosystem` | The package-URL type of the manager that builds it: `apk`, `deb`, `rpm`. Lower-case, an open vocabulary, as for `package`. Identity. |
+| `name`, `version` | As the package manager reports them (the apk `o:` origin name, and the version its members share). Identity. |
+
+The node holds the key and nothing else. `purl`, `cpe`, `license` and `architecture` are facts about an installed binary and stay on the `package`; a source supplies a field of its own only when a source of data does, and none does yet.
+
+**Observed (read 2026-10-15 from the apk database of the tap-web image).** All 101 records carry an `o:` line; they come from 69 source packages, 11 of which build more than one binary package, and every member of an origin shares one version. 47 of the 101 packages are their own origin. The 14 package names in the Trivy alerts collapse to 6 sources (`glibc-2.44`, `python-3.14`, `openssl`, `busybox`, `py3-pip`, `zlib`).
+
+**Every package draws the edge, including one that is its own source.** `DERIVES_FROM_SOURCE_PACKAGE` runs `package` to `source_package` even where the origin is the package itself, so a join by source never needs a fallback branch. Ecosystems with no binary/source split (pypi, npm) have no such edge. Nothing in this plugin emits these types yet; a collector or bundle does.
+
+**A source package is not a package.** The two are different nodes of different types even when name and version coincide, because one is what is built and the other is what is installed; a finding attaches to the package (`CARRIES_COMPLIANCE_FINDING`) and is counted by following the edge to the source.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-source-package-1 | Keyed By Ecosystem, Name And Version | Implemented | `computing_core__source_package` declares `NATURAL_KEY = (ecosystem, name, version)` and all three are required. The same name in another ecosystem, or another version, is another node. | `tests/test_software_inventory.py::TestSourcePackage::test_found_again_by_ecosystem_name_and_version`, `::test_key_fields_required` |
+| req-computing-core-source-package-2 | Ecosystem Is A Purl Type | Implemented | `ecosystem` is a lower-case purl type; an upper-case or empty value is refused. | `::TestSourcePackage::test_ecosystem_is_a_purl_type` |
+| req-computing-core-source-package-3 | Key Only, Runtime Dimension | Implemented | The node has no `purl`, `cpe`, `license`, `architecture` or `source_document` column, and carries `tap.computing: runtime`. | `::TestSourcePackage::test_it_holds_the_key_and_nothing_else`, `::test_create_and_display` |
+| req-computing-core-source-package-4 | Many Packages, One Source; Self-Origin Still Drawn | Implemented | Several packages draw the edge to one source package, a package that is its own origin is still two nodes joined by the edge. | `::TestSourcePackage::test_a_package_and_its_source_package_are_two_nodes`, `::TestEdges::test_one_source_package_has_many_packages_and_a_self_origin_still_gets_the_edge` |
+
 ### Library Modeling
 ----
 RID: `req-computing-core-library`
@@ -565,13 +599,14 @@ RID: `req-computing-core-inventory-edges`
 
 Status: `Implemented`
 
-Five edges connect the inventory types to `host` and `program`. Each is a reference, not containment: a package, library, operating system or provider outlives and is shared by the things pointing at it, so none is in any model's `CONTAINMENT_EDGES`, and retiring a host leaves them. None carries properties; each declares the plain identity (`discriminators: []`). All carry `tap.computing: runtime`.
+Six edges connect the inventory types to `host`, `program` and each other. Each is a reference, not containment: a package, library, operating system or provider outlives and is shared by the things pointing at it, so none is in any model's `CONTAINMENT_EDGES`, and retiring a host leaves them. None carries properties; each declares the plain identity (`discriminators: []`). All carry `tap.computing: runtime`.
 
 #### Implementation
 
 | edge | sentence | justification |
 | --- | --- | --- |
 | `INSTALLS_PACKAGE__computing_core` | `<host> INSTALLS_PACKAGE <package>` | the packages table of an image or host |
+| `DERIVES_FROM_SOURCE_PACKAGE__computing_core` | `<package> DERIVES_FROM_SOURCE_PACKAGE <source_package>` | the source a binary package is built from (computing-core#38): the apk `o:` origin, a deb `Source:`, an rpm source RPM. Drawn for every package, including one that is its own source. `DERIVES_FROM` alone would end in a preposition (`req-tap-plugin-edge-naming`), so the object noun is part of the slug |
 | `SHIPS_LIBRARY__computing_core` | `<package> SHIPS_LIBRARY <library>` | a library a package bundles (computing-core#33); a library built outside a package manager has none |
 | `LOADS_LIBRARY__computing_core` | `<program> LOADS_LIBRARY <library>` | which software runs a library. `LINKS_LIBRARY` (the issue's proposal) is not true of a Python import, and the question is the same |
 | `RUNS_OPERATING_SYSTEM__computing_core` | `<host> RUNS_OPERATING_SYSTEM <operating_system>` | the operating-systems table. `RUNS_ON` would end in a preposition (`req-tap-plugin-edge-naming`) |
@@ -584,8 +619,8 @@ There is no operating-system-to-package edge: which packages an OS comprises is 
 | ACID | Title | Status | Description | Notes |
 | --- | --- | :---: | --- | --- |
 | req-computing-core-inventory-edges-1 | The Sentences Connect | Implemented | Each edge connects its declared source type to its declared target type and carries `tap.computing: runtime`. | `tests/test_software_inventory.py::TestEdges::test_the_sentences_connect` |
-| req-computing-core-inventory-edges-2 | Wrong Direction Or Type Is Refused | Implemented | The reverse of each edge, and an edge of the wrong endpoint type, are refused wherever an endpoint type declares its edges (`host`, `package`, `library`, `operating_system`, `crypto_provider`). | `::TestEdges::test_the_wrong_way_round_or_wrong_type_is_refused`. The grid permits an edge when either the node's declaration or the edge definition allows each side, so `program`, which declares no edges, leaves its side open; the edge definition's `sources` is then a grant, not a restriction. |
-| req-computing-core-inventory-edges-3 | References, Not Containment | Implemented | Retiring a host with `cascade="contained"` leaves the package, operating system, library and provider reachable from it. | `::TestEdges::test_none_of_them_is_containment` |
+| req-computing-core-inventory-edges-2 | Wrong Direction Or Type Is Refused | Implemented | The reverse of each edge, and an edge of the wrong endpoint type, are refused wherever an endpoint type declares its edges (`host`, `package`, `source_package`, `library`, `operating_system`, `crypto_provider`). | `::TestEdges::test_the_wrong_way_round_or_wrong_type_is_refused`. The grid permits an edge when either the node's declaration or the edge definition allows each side, so `program`, which declares no edges, leaves its side open; the edge definition's `sources` is then a grant, not a restriction. |
+| req-computing-core-inventory-edges-3 | References, Not Containment | Implemented | Retiring a host with `cascade="contained"` leaves the package, source package, operating system, library and provider reachable from it. | `::TestEdges::test_none_of_them_is_containment` |
 | req-computing-core-inventory-edges-4 | Plain Identity, No Properties | Implemented | Each edge declares `identity: {discriminators: []}` (found again by type, source and target), has no `property_schema`, and carries `tap.computing: runtime`. | `::TestEdges::test_every_edge_declares_the_plain_identity_and_no_properties` |
 
 ### Protocol Scope
@@ -627,7 +662,7 @@ The plugin favors a small but expressive edge family over generic catch-all edge
 > `GENERATES_FILE` (and, until 2026-10-02, `FETCHES_DOCUMENT` and `HOSTS_DOCUMENT`; see below),
 > and since 2026-10-08 `DEFINES_OS_USER`, `DEFINES_OS_GROUP` and `MEMBER_OF_GROUP`
 > ([OS Accounts And Groups](#os-accounts-and-groups)), and since 2026-10-14 `INSTALLS_PACKAGE`,
-> `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM` and `CARRIES_CRYPTO_PROVIDER`
+> `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM`, `CARRIES_CRYPTO_PROVIDER` and (since 2026-10-15) `DERIVES_FROM_SOURCE_PACKAGE`
 > ([Software Inventory Edges](#software-inventory-edges)).
 > The candidates below return — correctly named per the add-edge skill — when a collector
 > actually emits them.

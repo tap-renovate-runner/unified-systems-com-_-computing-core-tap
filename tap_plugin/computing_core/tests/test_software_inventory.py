@@ -15,7 +15,7 @@ import pytest
 import tap_plugin.computing_core.models as computing  # noqa: F401 — trigger model registration
 
 from tap_grid.constraints import InvalidEdgeError
-from tap_grid.models import Entity
+from tap_grid.models import Edge, Entity
 from tap_grid.registry import get_model_class
 from tap_grid.services import create_edge, create_node, delete_node
 
@@ -30,6 +30,7 @@ LIBRARY = {
     "source_kind": "self-built",
     "path": "/usr/lib/ossl-modules/fips.so",
 }
+SOURCE_PACKAGE = {"ecosystem": "apk", "name": "glibc", "version": "2.44-r6"}
 WOLFI = {"os_id": "wolfi", "version_id": "20230201", "build_id": "sha256:" + "a" * 64, "rolling": True}
 PROVIDER = {
     "scope": "tap-web",
@@ -84,6 +85,45 @@ class TestPackage:
         assert create_node("computing_core__package", {**PACKAGE, "ecosystem": "pypi"}).success
         assert not create_node("computing_core__package", {**PACKAGE, "ecosystem": "APK"}).success
         assert not create_node("computing_core__package", {**PACKAGE, "ecosystem": ""}).success
+
+
+@pytest.mark.django_db
+class TestSourcePackage:
+    def test_create_and_display(self):
+        node = _create("computing_core__source_package", SOURCE_PACKAGE)
+        node.entity.refresh_from_db()
+        assert node.entity.name == "glibc 2.44-r6"
+        assert node.entity.dimensions.get("tap.computing") == "runtime"
+
+    @pytest.mark.parametrize("missing", ["ecosystem", "name", "version"])
+    def test_key_fields_required(self, missing):
+        payload = {k: v for k, v in SOURCE_PACKAGE.items() if k != missing}
+        assert not create_node("computing_core__source_package", payload).success
+
+    def test_found_again_by_ecosystem_name_and_version(self):
+        node = _create("computing_core__source_package", SOURCE_PACKAGE)
+        model = get_model_class("computing_core__source_package")
+        assert model.find_existing(ecosystem="apk", name="glibc", version="2.44-r6").pk == node.pk
+        assert model.find_existing(ecosystem="apk", name="glibc", version="2.44-r7") is None
+        assert model.find_existing(ecosystem="deb", name="glibc", version="2.44-r6") is None
+
+    def test_ecosystem_is_a_purl_type(self):
+        assert create_node("computing_core__source_package", {**SOURCE_PACKAGE, "ecosystem": "deb"}).success
+        assert not create_node("computing_core__source_package", {**SOURCE_PACKAGE, "ecosystem": "APK"}).success
+        assert not create_node("computing_core__source_package", {**SOURCE_PACKAGE, "ecosystem": ""}).success
+
+    def test_it_holds_the_key_and_nothing_else(self):
+        """purl, cpe, license and architecture are facts about an installed binary; they stay on `package`."""
+        own = {f.name for f in get_model_class("computing_core__source_package")._meta.concrete_fields}
+        assert {"ecosystem", "name", "version"} <= own
+        assert not own & {"purl", "cpe", "license", "architecture", "source_document"}
+
+    def test_a_package_and_its_source_package_are_two_nodes(self):
+        """An origin that is the package itself (47 of 101 in the tap-web image) is still two nodes."""
+        pkg = _create("computing_core__package", {"ecosystem": "apk", "name": "zlib", "version": "1.3.1-r5"})
+        src = _create("computing_core__source_package", {"ecosystem": "apk", "name": "zlib", "version": "1.3.1-r5"})
+        assert pkg.entity.entity_type != src.entity.entity_type
+        assert pkg.entity_id != src.entity_id
 
 
 @pytest.mark.django_db
@@ -226,6 +266,7 @@ class TestEdges:
         return {
             "host": _create("computing_core__host", HOST),
             "package": _create("computing_core__package", PACKAGE),
+            "source_package": _create("computing_core__source_package", SOURCE_PACKAGE),
             "library": _create("computing_core__library", LIBRARY),
             "program": _create("computing_core__program", {"program_name": "python3.14"}),
             "os": _create("computing_core__operating_system", WOLFI),
@@ -237,6 +278,7 @@ class TestEdges:
         for src, edge, dst in [
             ("host", "INSTALLS_PACKAGE", "package"),
             ("package", "SHIPS_LIBRARY", "library"),
+            ("package", "DERIVES_FROM_SOURCE_PACKAGE", "source_package"),
             ("program", "LOADS_LIBRARY", "library"),
             ("host", "RUNS_OPERATING_SYSTEM", "os"),
             ("library", "CARRIES_CRYPTO_PROVIDER", "provider"),
@@ -257,6 +299,10 @@ class TestEdges:
             ("package", "RUNS_OPERATING_SYSTEM", "os"),
             ("provider", "CARRIES_CRYPTO_PROVIDER", "library"),
             ("host", "CARRIES_CRYPTO_PROVIDER", "provider"),
+            ("source_package", "DERIVES_FROM_SOURCE_PACKAGE", "package"),
+            ("host", "DERIVES_FROM_SOURCE_PACKAGE", "source_package"),
+            ("package", "DERIVES_FROM_SOURCE_PACKAGE", "library"),
+            ("library", "DERIVES_FROM_SOURCE_PACKAGE", "source_package"),
         ],
     )
     def test_the_wrong_way_round_or_wrong_type_is_refused(self, src, edge, dst):
@@ -272,6 +318,7 @@ class TestEdges:
         for slug in (
             "INSTALLS_PACKAGE",
             "SHIPS_LIBRARY",
+            "DERIVES_FROM_SOURCE_PACKAGE",
             "LOADS_LIBRARY",
             "RUNS_OPERATING_SYSTEM",
             "CARRIES_CRYPTO_PROVIDER",
@@ -288,15 +335,26 @@ class TestEdges:
         create_edge(n["host"].entity, n["package"].entity, "INSTALLS_PACKAGE__computing_core")
         create_edge(n["host"].entity, n["os"].entity, "RUNS_OPERATING_SYSTEM__computing_core")
         create_edge(n["package"].entity, n["library"].entity, "SHIPS_LIBRARY__computing_core")
+        create_edge(n["package"].entity, n["source_package"].entity, "DERIVES_FROM_SOURCE_PACKAGE__computing_core")
         create_edge(n["library"].entity, n["provider"].entity, "CARRIES_CRYPTO_PROVIDER__computing_core")
 
         assert delete_node(n["host"].entity_id, cascade="contained").success
 
         n["host"].entity.refresh_from_db()
         assert n["host"].entity.deleted_at is not None
-        for name in ("package", "library", "os", "provider"):
+        for name in ("package", "source_package", "library", "os", "provider"):
             n[name].entity.refresh_from_db()
             assert n[name].entity.deleted_at is None, name
+
+    def test_one_source_package_has_many_packages_and_a_self_origin_still_gets_the_edge(self):
+        """req-computing-core-source-package-4: the glibc case from the issue, plus a package that is its own source."""
+        source = _create("computing_core__source_package", SOURCE_PACKAGE)
+        names = ("glibc", "glibc-dev", "glibc-locale-posix", "ld-linux", "libcrypt1")
+        for name in names:  # `glibc` is its own origin; the rest are built from the same source
+            package = _create("computing_core__package", {**PACKAGE, "name": name})
+            create_edge(package.entity, source.entity, "DERIVES_FROM_SOURCE_PACKAGE__computing_core")
+        edges = Edge.objects.filter(edge_type="DERIVES_FROM_SOURCE_PACKAGE__computing_core", to_entity=source.entity)
+        assert edges.count() == len(names)
 
     def test_a_scanner_finding_attaches_to_a_package_or_a_library(self):
         """req-computing-core-package-5: the existing compliance edge, no new finding edge.
