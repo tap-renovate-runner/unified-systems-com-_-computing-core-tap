@@ -10,22 +10,26 @@ from django.db import models
 from tap_grid.models import BaseModel
 
 #: A SHA-256 digest as 64 lower-case hex characters (req-computing-core-sbom-document-1).
-SHA256_HEX_PATTERN = r"^[0-9a-f]{64}$"
+SHA256_HEX_PATTERN = r"^[0-9a-f]{64}\Z"
 
 #: A document format name, lower-case and open (``cyclonedx`` now, ``spdx`` when it is read).
-FORMAT_PATTERN = r"^[a-z][a-z0-9-]*$"
+FORMAT_PATTERN = r"^[a-z][a-z0-9-]*\Z"
 
 #: A CycloneDX ``serialNumber`` (``urn:uuid:…``), or empty where the document has none.
-SERIAL_NUMBER_PATTERN = r"^(urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?$"
+SERIAL_NUMBER_PATTERN = r"^(urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?\Z"
 
 #: An artifact digest ``<algorithm>:<hex>`` (an image digest ``sha256:…``), or empty.
 #: Bounded to the column: at most 31 + 1 + 128 = 160 characters (``subject_digest`` is ``max_length=160``).
-SUBJECT_DIGEST_PATTERN = r"^([a-z0-9]{1,31}:[0-9a-f]{1,128})?$"
+SUBJECT_DIGEST_PATTERN = r"^([a-z0-9]{1,31}:[0-9a-f]{1,128})?\Z"
 
 #: An RFC 3339 date-time with a time zone, which is what CycloneDX ``metadata.timestamp`` is.
 #: ``format: date-time`` is not enforced by the schema validator, so the shape is spelled out;
 #: ``20261015`` is a valid-looking string the column would parse and a reader would misread.
-TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})\Z"
+
+#: Text with no control character or newline (a failing check, a signer). ``\\Z`` and not ``$``:
+#: ``$`` also matches before a trailing newline, which would let ``"x\\n"`` through.
+PLAIN_TEXT_PATTERN = r"^[^\x00-\x1f\x7f]*\Z"
 
 #: The largest value a ``PositiveIntegerField`` holds on PostgreSQL.
 MAX_COUNTER = 2_147_483_647
@@ -41,7 +45,7 @@ class SbomDocument(BaseModel):
     the highest ``revision`` is the current one; earlier revisions are kept.
 
     ``verified`` is three-state and records an outcome the caller decided: ``True`` verified,
-    ``False`` verification ran and failed, ``None`` not checked. ``signer`` is non-empty only when
+    ``False`` verification ran and failed, ``None`` not checked. ``signer`` is non-empty exactly when
     ``verified`` is ``True``.
 
     A document draws no edge to the packages it lists. What a host installs is its
@@ -87,9 +91,9 @@ class SbomDocument(BaseModel):
         "produced_at": {"type": ["string", "null"], "pattern": TIMESTAMP_PATTERN},
         "generator": {"type": "string", "maxLength": 255},
         "component_count": {"type": "integer", "minimum": 0, "maximum": MAX_COUNTER},
-        "signer": {"type": "string", "maxLength": 512},
+        "signer": {"type": "string", "maxLength": 512, "pattern": PLAIN_TEXT_PATTERN},
         "verified": {"type": ["boolean", "null"]},
-        "verification_note": {"type": "string", "maxLength": 255},
+        "verification_note": {"type": "string", "maxLength": 255, "pattern": PLAIN_TEXT_PATTERN},
     }
     FIELD_VALIDATION_SCHEMA: ClassVar[dict[str, Any]] = {
         "content_digest": {"validation": "jsonschema", "schema": {"type": "string", "pattern": SHA256_HEX_PATTERN}},
@@ -110,9 +114,15 @@ class SbomDocument(BaseModel):
             "validation": "jsonschema",
             "schema": {"type": "integer", "minimum": 0, "maximum": MAX_COUNTER},
         },
-        "signer": {"validation": "jsonschema", "schema": {"type": "string", "maxLength": 512}},
+        "signer": {
+            "validation": "jsonschema",
+            "schema": {"type": "string", "maxLength": 512, "pattern": PLAIN_TEXT_PATTERN},
+        },
         "verified": {"validation": "jsonschema", "schema": {"type": ["boolean", "null"]}},
-        "verification_note": {"validation": "jsonschema", "schema": {"type": "string", "maxLength": 255}},
+        "verification_note": {
+            "validation": "jsonschema",
+            "schema": {"type": "string", "maxLength": 255, "pattern": PLAIN_TEXT_PATTERN},
+        },
     }
     CREATE_REQUIRED: ClassVar[list[str]] = ["content_digest"]
 
@@ -192,13 +202,15 @@ class SbomDocument(BaseModel):
         value = self.produced_at
         if value is None or isinstance(value, datetime):
             return
-        if not isinstance(value, str) or not re.match(TIMESTAMP_PATTERN, value):
+        if not isinstance(value, str) or not re.fullmatch(TIMESTAMP_PATTERN, value):
             raise ValidationError({"produced_at": ["produced_at must be an RFC 3339 date-time with a time zone."]})
 
     def validate(self) -> None:
         """``signer`` is non-empty only when ``verified`` is true (req-computing-core-sbom-document-3)."""
         if self.signer and self.verified is not True:
             raise ValidationError({"signer": ["signer may be set only when verified is true."]})
+        if self.verified is True and not self.signer:
+            raise ValidationError({"signer": ["a verified document names its signer."]})
         if self.verified is True and self.verification_note:
             raise ValidationError({"verification_note": ["a verified document has no verification note."]})
         if self.verified is False and not self.verification_note:
