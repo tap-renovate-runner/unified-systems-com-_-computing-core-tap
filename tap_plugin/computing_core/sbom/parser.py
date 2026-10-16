@@ -188,9 +188,9 @@ def _check_format(document: Mapping[str, Any]) -> str:
     if document.get("bomFormat") != "CycloneDX":
         raise SbomParseError(f"not a CycloneDX document: bomFormat is {document.get('bomFormat')!r}")
     spec_version = document.get("specVersion")
-    if spec_version not in SPEC_VERSIONS:
+    if not isinstance(spec_version, str) or spec_version not in SPEC_VERSIONS:
         raise SbomParseError(
-            f"CycloneDX specVersion {spec_version!r} is not read; only {', '.join(sorted(SPEC_VERSIONS))} are"
+            f"CycloneDX specVersion {_clip(spec_version)} is not read; only {', '.join(sorted(SPEC_VERSIONS))} are"
         )
     return str(spec_version)
 
@@ -280,14 +280,14 @@ def _purl_parts(purl: str) -> tuple[str, dict[str, str], list[str]]:
         try:
             name, decoded = unquote(key, errors="strict").lower(), unquote(value, errors="strict")
         except UnicodeDecodeError:
-            problems.append(f"qualifier {key!r} is not valid percent-encoded UTF-8; ignored")
+            problems.append(f"qualifier {_clip(key)} is not valid percent-encoded UTF-8; ignored")
             continue
         if name in qualifiers or name in repeated:
             repeated.add(name)
             qualifiers.pop(name, None)
             continue
         qualifiers[name] = decoded
-    problems.extend(f"qualifier {name!r} appears more than once; ignored" for name in sorted(repeated))
+    problems.extend(f"qualifier {_clip(name)} appears more than once; ignored" for name in sorted(repeated))
     return purl_type, qualifiers, problems
 
 
@@ -307,6 +307,11 @@ def _license(component: Mapping[str, Any], notes: list[str], who: str) -> str:
         return expressions[0]
     parts = [f"({e})" if " " in e else e for e in expressions] + ids
     return " AND ".join(parts)
+
+
+def _clip(value: object) -> str:
+    """``repr`` of at most 60 characters of ``value``, for a message that must not grow with the input."""
+    return repr(str(value)[:60])
 
 
 def _fit(value: str, limit_name: str, who: str, notes: list[str]) -> str:
@@ -336,18 +341,24 @@ def _canonical(component: Mapping[str, Any]) -> str:
 # --- the parser -------------------------------------------------------------------------------
 
 
-def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification | None = None) -> SbomBatch:
+def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification) -> SbomBatch:
     """Turn one CycloneDX 1.4 to 1.7 JSON document into the grid's inventory rows.
 
     ``data`` is the document's exact bytes (the digest is over them, not over a re-serialisation).
     ``host_id`` is the entity id of the ``host`` the document describes, resolved by the caller.
-    ``verification`` is the caller's verdict on the document's attestation. Only a ``verified``
-    document is parsed: any other outcome raises ``ValueError`` (record it with ``record_document``
-    instead), and a verified one sets ``verified``, ``signer`` and ``verification_note`` on the
-    document row. With none given the row says nothing about verification (not checked).
+    ``verification`` is REQUIRED: the caller's verdict on the document's attestation, a
+    ``Verification``. Only a ``verified`` document is parsed. Omitting it is a ``TypeError`` and any
+    other outcome (or a value that is not a ``Verification``) raises ``ValueError`` before a byte of
+    the document is read; record such a document with ``record_document``. The verified outcome
+    sets ``verified`` and ``signer`` on the document row.
     Raises ``SbomParseError`` for anything unreadable; never returns an empty batch.
     """
-    if verification is not None and verification.outcome != "verified":
+    from tap_plugin.computing_core.sbom.verification import VERIFIED
+    from tap_plugin.computing_core.sbom.verification import Verification as _Verification
+
+    if not isinstance(verification, _Verification):
+        raise ValueError("verification must be a Verification; an unverified document is not parsed")
+    if verification.outcome != VERIFIED:
         raise ValueError(
             f"a document whose verification is {verification.outcome!r} is not parsed; use record_document"
         )
@@ -455,8 +466,8 @@ def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification | N
         _, qualifiers, problems = _purl_parts(purl)
         notes.extend(f"{who}: {problem}" for problem in problems)
         architecture = qualifiers.get("arch", "")
-        if architecture and (not _ARCHITECTURE.match(architecture) or len(architecture) > LIMITS["architecture"]):
-            notes.append(f"{who}: arch qualifier {architecture!r} is not one architecture; left empty")
+        if architecture and (not _ARCHITECTURE.fullmatch(architecture) or len(architecture) > LIMITS["architecture"]):
+            notes.append(f"{who}: arch qualifier {_clip(architecture)} is not one architecture; left empty")
             architecture = ""
         cpe = _fit(_text(component.get("cpe")), "cpe", who, notes)
         candidates = [c for c in dict.fromkeys(cpe_values) if c != cpe and c.startswith("cpe:2.3:")]
@@ -489,10 +500,10 @@ def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification | N
             ):
                 if not stated:
                     continue
-                if _PACKAGE_NAME.match(stated) and len(stated) <= LIMITS["name"]:
+                if _PACKAGE_NAME.fullmatch(stated) and len(stated) <= LIMITS["name"]:
                     origin = stated
                     break
-                notes.append(f"{who}: {where} {stated[:60]!r} is not a package name; the next source is used")
+                notes.append(f"{who}: {where} {_clip(stated)} is not a package name; the next source is used")
             source_key = (ecosystem, origin, version)
             if source_key not in source_labels:
                 source_labels[source_key] = _label(
@@ -557,26 +568,26 @@ def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification | N
     digest = hashlib.sha256(bytes(data)).hexdigest()
     raw_subject = metadata.get("component")
     subject: Mapping[str, Any] = raw_subject if isinstance(raw_subject, dict) else {}
-    subject_digest = _text(subject.get("version")) if _IMAGE_DIGEST.match(_text(subject.get("version"))) else ""
+    subject_digest = _text(subject.get("version")) if _IMAGE_DIGEST.fullmatch(_text(subject.get("version"))) else ""
     serial = _text(document.get("serialNumber"))
-    if serial and not _SERIAL.match(serial):
-        notes.append(f"serialNumber {serial!r} is not urn:uuid:...; left empty")
+    if serial and not _SERIAL.fullmatch(serial):
+        notes.append(f"serialNumber {_clip(serial)} is not urn:uuid:...; left empty")
         serial = ""
     revision = document.get("version")
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
         revision = 1
     elif revision > LIMITS["revision"]:
-        notes.append(f"document version {revision} is over {LIMITS['revision']}; revision 1 used")
+        notes.append(f"document version {_clip(revision)} is over {LIMITS['revision']}; revision 1 used")
         revision = 1
     produced = _text(metadata.get("timestamp"))
-    if produced and not _TIMESTAMP.match(produced):
-        notes.append(f"metadata.timestamp {produced[:40]!r} is not an RFC 3339 date-time with a zone; left out")
+    if produced and not _TIMESTAMP.fullmatch(produced):
+        notes.append(f"metadata.timestamp {_clip(produced)} is not an RFC 3339 date-time with a zone; left out")
         produced = ""
     if produced:
         try:
             datetime.fromisoformat(produced)
         except ValueError:
-            notes.append(f"metadata.timestamp {produced!r} is not a real date-time; left out")
+            notes.append(f"metadata.timestamp {_clip(produced)} is not a real date-time; left out")
             produced = ""
     generator = _generator(metadata)
     if len(generator) > LIMITS["generator"]:
@@ -597,7 +608,7 @@ def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification | N
             "produced_at": produced or None,
             "generator": generator,
             "component_count": len(components),
-            **(verification.document_fields() if verification is not None else {}),
+            **verification.document_fields(),
         },
     )
 

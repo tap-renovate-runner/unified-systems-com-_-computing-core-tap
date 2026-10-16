@@ -15,8 +15,9 @@ import uuid
 from pathlib import Path
 
 import pytest
-from tap_plugin.computing_core.sbom import SbomBatch, build_cyclonedx, parse_cyclonedx
+from tap_plugin.computing_core.sbom import SbomBatch, Verification, build_cyclonedx, parse_cyclonedx
 
+VERIFIED = Verification("verified", signer="ci@example.org")
 CORPUS = Path(__file__).resolve().parent / "corpus" / "tap-web-latest-arm64.cdx.json"
 HOST = str(uuid.UUID("01a13c38-4f5e-735c-9cf2-1f159f4282b6"))
 
@@ -34,7 +35,7 @@ def corpus_bytes() -> bytes:
 
 @pytest.fixture(scope="module")
 def batch(corpus_bytes: bytes) -> SbomBatch:
-    return parse_cyclonedx(corpus_bytes, host_id=HOST)
+    return parse_cyclonedx(corpus_bytes, host_id=HOST, verification=VERIFIED)
 
 
 def _inputs(batch: SbomBatch) -> dict:
@@ -129,7 +130,7 @@ class TestRoundTrip:
     """req-computing-core-sbom-build-2."""
 
     def test_parse_of_build_of_parse_is_parse(self, batch: SbomBatch, built: bytes):
-        again = parse_cyclonedx(built, host_id=HOST)
+        again = parse_cyclonedx(built, host_id=HOST, verification=VERIFIED)
 
         def rows(b: SbomBatch):
             nodes = [n for n in b.nodes if n.entity_type != DOCUMENT]
@@ -139,7 +140,7 @@ class TestRoundTrip:
         assert rows(again) == rows(batch)
 
     def test_the_source_package_edges_survive_through_the_upstream_qualifier(self, batch: SbomBatch, built: bytes):
-        again = parse_cyclonedx(built, host_id=HOST)
+        again = parse_cyclonedx(built, host_id=HOST, verification=VERIFIED)
         assert len(again.nodes_of("computing_core__source_package")) == 72
         assert len(again.edges_of("DERIVES_FROM_SOURCE_PACKAGE__computing_core")) == 102
         assert "syft:metadata:originPackage" not in built.decode()
@@ -147,12 +148,12 @@ class TestRoundTrip:
     def test_a_package_with_no_purl_comes_back_as_the_same_package_with_its_own_origin(self):
         """The minimal purl is added, and with no `upstream=` the source package is the package's own name."""
         row = {"ecosystem": "apk", "name": "libssl3", "version": "3", "architecture": "", "cpe_candidates": []}
-        again = parse_cyclonedx(build_cyclonedx([row]), host_id=HOST)
+        again = parse_cyclonedx(build_cyclonedx([row]), host_id=HOST, verification=VERIFIED)
         assert [n.properties["name"] for n in again.nodes_of(PACKAGE)] == ["libssl3"]
         assert [n.properties["name"] for n in again.nodes_of("computing_core__source_package")] == ["libssl3"]
 
     def test_the_document_row_differs_because_the_bytes_do(self, batch: SbomBatch, built: bytes):
-        again = parse_cyclonedx(built, host_id=HOST)
+        again = parse_cyclonedx(built, host_id=HOST, verification=VERIFIED)
         assert (
             again.nodes_of(DOCUMENT)[0].properties["content_digest"]
             != batch.nodes_of(DOCUMENT)[0].properties["content_digest"]

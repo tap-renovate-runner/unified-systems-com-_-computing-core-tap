@@ -40,13 +40,14 @@ def parse_with_django_blocked(corpus: str, host_id: str) -> tuple[int, int, list
     Returns the node count, the edge count and any Django modules found loaded afterwards.
     """
     sys.meta_path.insert(0, _BlockDjango())
-    from tap_plugin.computing_core.sbom import build_cyclonedx, parse_cyclonedx
+    from tap_plugin.computing_core.sbom import Verification, build_cyclonedx, parse_cyclonedx, record_document
 
     data = Path(corpus).read_bytes()
     originals = (builtins.open, io.open, socket.socket, time.time, time.monotonic, time.time_ns)
     builtins.open = io.open = socket.socket = time.time = time.monotonic = time.time_ns = _refuse  # type: ignore[assignment]
     try:
-        batch = parse_cyclonedx(data, host_id=host_id)
+        batch = parse_cyclonedx(data, host_id=host_id, verification=Verification("verified", signer="ci"))
+        record_document(data, verification=Verification("refused", "signer-identity"))
         build_cyclonedx([{"ecosystem": "apk", "name": "zlib", "version": "1"}])
     finally:
         builtins.open, io.open, socket.socket, time.time, time.monotonic, time.time_ns = originals  # type: ignore[assignment]

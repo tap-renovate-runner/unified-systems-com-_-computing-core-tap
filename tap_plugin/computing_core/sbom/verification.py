@@ -14,19 +14,12 @@ Spec: specs/spec-computing-core-v0.md (req-computing-core-sbom-parse-10 and -11)
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any, Final
 
 from tap_plugin.computing_core.sbom.batch import NodeRow, SbomBatch, SbomReport
-from tap_plugin.computing_core.sbom.parser import (
-    _IMAGE_DIGEST,
-    _SERIAL,
-    LIMITS,
-    SBOM_DOCUMENT,
-    SPEC_VERSIONS,
-    SbomParseError,
-    _load,
-)
+from tap_plugin.computing_core.sbom.parser import _IMAGE_DIGEST, SBOM_DOCUMENT
 
 from tap_grid.natural_key import identity_lock_key
 
@@ -41,6 +34,8 @@ SIGNER_IDENTITY: Final[str] = "signer-identity"
 SUBJECT_DIGEST: Final[str] = "subject-digest"
 PREDICATE_TYPE: Final[str] = "predicate-type"
 
+#: A control character or newline: never in a check or a signer, which end up in a log line and a column.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 NOTE_MAX: Final[int] = 255
 SIGNER_MAX: Final[int] = 512
 
@@ -61,8 +56,12 @@ class Verification:
             raise ValueError(f"outcome {self.outcome!r} is not one of {', '.join(OUTCOMES)}")
         if not isinstance(self.check, str) or not isinstance(self.signer, str):
             raise ValueError("check and signer must be strings")
+        if _CONTROL.search(self.check) or _CONTROL.search(self.signer):
+            raise ValueError("check and signer contain no control character or newline")
         if self.outcome == REFUSED and not self.check.strip():
             raise ValueError("a refused document names the check that failed")
+        if self.outcome == VERIFIED and not self.signer.strip():
+            raise ValueError("a verified document names its signer")
         if self.outcome == VERIFIED and self.check:
             raise ValueError("a verified document has no failing check")
         if self.outcome != VERIFIED and self.signer:
@@ -83,47 +82,40 @@ class Verification:
 def record_document(data: bytes, *, verification: Verification, subject_digest: str = "") -> SbomBatch:
     """A batch holding only the ``sbom_document`` row of a document that was not verified.
 
-    The document's contents are not parsed for packages: no package, library, source package,
-    operating-system or edge row is returned, and nothing in the body is trusted. The row carries
-    the SHA-256 of the exact bytes, the outcome, and the few identifying fields that are safe to
-    read: the format and ``specVersion``, ``serialNumber`` and ``version`` if the body parses as
-    CycloneDX JSON within the parser's caps, and left empty if it does not. ``subject_digest`` is
-    the caller's (from the attestation it checked), not the body's claim.
+    Nothing in the body is read: not parsed as JSON, not scanned (``req-cicd-sbom-24-6``: nothing
+    from the contents of an unverified document is parsed). The row is the SHA-256 of the exact
+    bytes, the caller's outcome (``verified`` false for ``refused``, null for ``not-observable``),
+    the failing check in ``verification_note``, and the caller's ``subject_digest`` (from the
+    attestation it checked). ``format`` is ``unknown`` and ``spec_version``, ``serial_number`` and
+    ``component_count`` are empty or zero, with ``revision`` 1, whatever the body is, so a readable
+    and an unreadable body give the same row apart from the digest. No package, library,
+    source-package, operating-system or edge row is returned.
 
-    A document that was verified goes through ``parse_cyclonedx`` instead.
+    ``data`` must be ``bytes`` or ``bytearray``: anything else is a ``TypeError`` (``bytes(5)``
+    would hash five zero bytes). A verified document goes through ``parse_cyclonedx`` instead.
     """
+    if not isinstance(data, bytes | bytearray):
+        raise TypeError(f"the document must be bytes, not {type(data).__name__}")
+    if not isinstance(verification, Verification):
+        raise TypeError("verification must be a Verification")
     if verification.outcome == VERIFIED:
         raise ValueError("a verified document is parsed with parse_cyclonedx, not only recorded")
-    if subject_digest and not _IMAGE_DIGEST.match(subject_digest):
-        raise ValueError(f"subject_digest {subject_digest!r} is not <algorithm>:<hex>")
+    if not isinstance(subject_digest, str) or (subject_digest and not _IMAGE_DIGEST.fullmatch(subject_digest)):
+        raise ValueError("subject_digest must be empty or <algorithm>:<hex>")
     digest = hashlib.sha256(bytes(data)).hexdigest()
-    fmt, spec_version, serial, revision = "unknown", "", "", 1
-    try:
-        body = _load(data)
-    except SbomParseError:
-        body = {}
-    if body.get("bomFormat") == "CycloneDX":
-        fmt = "cyclonedx"
-        spec = body.get("specVersion")
-        spec_version = spec if spec in SPEC_VERSIONS else ""
-        stated = body.get("serialNumber")
-        serial = stated if isinstance(stated, str) and _SERIAL.match(stated) else ""
-        number = body.get("version")
-        if isinstance(number, int) and not isinstance(number, bool) and 1 <= number <= LIMITS["revision"]:
-            revision = number
     label = identity_lock_key(SBOM_DOCUMENT, {"content_digest": digest})
     if label is None:  # pragma: no cover - the digest is never a hole
-        raise SbomParseError("the document has no digest")
+        raise ValueError("the document has no digest")
     row = NodeRow(
         ref=label,
         entity_type=SBOM_DOCUMENT,
-        name=f"sbom {digest[:12]} r{revision}",
+        name=f"sbom {digest[:12]} r1",
         properties={
             "content_digest": digest,
-            "format": fmt,
-            "spec_version": spec_version,
-            "serial_number": serial,
-            "revision": revision,
+            "format": "unknown",
+            "spec_version": "",
+            "serial_number": "",
+            "revision": 1,
             "subject_digest": subject_digest,
             "produced_at": None,
             "generator": "",

@@ -11,13 +11,14 @@ from pathlib import Path
 
 import pytest
 import tap_plugin.computing_core.models as computing  # noqa: F401 — trigger model registration
-from tap_plugin.computing_core.sbom import SbomBatch, parse_cyclonedx
+from tap_plugin.computing_core.sbom import SbomBatch, Verification, parse_cyclonedx
 
 from tap_grid.grift import grift_import
 from tap_grid.models import Edge, Entity
 from tap_grid.registry import get_model_class
 from tap_grid.services import create_node
 
+VERIFIED = Verification("verified", signer="ci@example.org")
 CORPUS = Path(__file__).resolve().parent / "corpus" / "tap-web-latest-arm64.cdx.json"
 
 pytestmark = pytest.mark.django_db
@@ -51,7 +52,7 @@ def _live_edges(edge_type: str) -> int:
 class TestTheCorpusImports:
     def test_it_lands_the_inventory_on_the_grid(self):
         host = _host()
-        _import(parse_cyclonedx(CORPUS.read_bytes(), host_id=host))
+        _import(parse_cyclonedx(CORPUS.read_bytes(), host_id=host, verification=VERIFIED))
         assert _count("computing_core__package") == 180
         assert _count("computing_core__library") == 3
         assert _count("computing_core__source_package") == 72
@@ -65,7 +66,7 @@ class TestTheCorpusImports:
 
     def test_the_stored_packages_keep_the_whole_purl_and_the_candidates(self):
         host = _host()
-        _import(parse_cyclonedx(CORPUS.read_bytes(), host_id=host))
+        _import(parse_cyclonedx(CORPUS.read_bytes(), host_id=host, verification=VERIFIED))
         libssl3 = get_model_class("computing_core__package").objects.get(name="libssl3")
         assert libssl3.purl.endswith("?arch=aarch64&distro=wolfi-20230201&upstream=openssl")
         assert len(libssl3.cpe_candidates) == 3
@@ -73,7 +74,7 @@ class TestTheCorpusImports:
 
     def test_importing_the_same_document_again_adds_nothing(self):
         host = _host()
-        batch = parse_cyclonedx(CORPUS.read_bytes(), host_id=host)
+        batch = parse_cyclonedx(CORPUS.read_bytes(), host_id=host, verification=VERIFIED)
         _import(batch)
         entities, edges = Entity.objects.count(), Edge.objects.count()
         _import(batch)
@@ -81,7 +82,7 @@ class TestTheCorpusImports:
 
     def test_the_host_the_caller_named_is_the_one_the_edges_use(self):
         host = _host()
-        _import(parse_cyclonedx(CORPUS.read_bytes(), host_id=host))
+        _import(parse_cyclonedx(CORPUS.read_bytes(), host_id=host, verification=VERIFIED))
         installs = Edge.objects.filter(edge_type="INSTALLS_PACKAGE__computing_core")
         assert {str(e.from_entity_id) for e in installs} == {host}
 

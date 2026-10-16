@@ -164,8 +164,8 @@ class TestVerifiedIsThreeState:
 
     @pytest.mark.parametrize("state", [True, False, None])
     def test_true_false_and_null_are_accepted(self, state):
-        note = {"verification_note": "signer-identity"} if state is False else {}
-        node = _create(TYPE, {**DOCUMENT, "verified": state, **note})
+        extra = {False: {"verification_note": "signer-identity"}, True: {"signer": "ci"}, None: {}}[state]
+        node = _create(TYPE, {**DOCUMENT, "verified": state, **extra})
         node.refresh_from_db()
         assert node.verified is state
 
@@ -263,7 +263,7 @@ class TestValuesFitTheColumns:
         ],
     )
     def test_it_is_refused(self, field, bad):
-        assert not create_node(TYPE, {**DOCUMENT, field: bad, "verified": True}).success
+        assert not create_node(TYPE, {**DOCUMENT, "verified": True, "signer": "ci", field: bad}).success
 
     @pytest.mark.parametrize("good", ["2026-10-15T15:02:05Z", "2026-10-15T15:02:05.123+02:00", None])
     def test_a_full_timestamp_or_null_is_accepted(self, good):
@@ -345,3 +345,58 @@ class TestCurrentIsVerifiedOnly:
     def test_another_lineage_is_not_mixed_in(self):
         self._doc(1, 1, verified=True, signer="ci")
         assert get_model_class(TYPE).current(SUBJECT, "urn:uuid:11111111-2222-3333-4444-555555555555") is None
+
+
+@pytest.mark.django_db
+class TestStrictShapes:
+    """The patterns end at the end of the string, not before a trailing newline; a verified document names its signer."""
+
+    def test_a_verified_document_must_name_its_signer(self):
+        assert not create_node(TYPE, {**DOCUMENT, "verified": True}).success
+        assert not create_node(TYPE, {**DOCUMENT, "verified": True, "signer": ""}).success
+        assert create_node(TYPE, {**DOCUMENT, "verified": True, "signer": "ci@example.org"}).success
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("content_digest", DIGEST + "\n"),
+            ("subject_digest", SUBJECT + "\n"),
+            ("serial_number", SERIAL + "\n"),
+            ("produced_at", "2026-10-15T15:02:05Z\n"),
+            ("format", "cyclonedx\n"),
+        ],
+    )
+    def test_a_trailing_newline_is_refused(self, field, value):
+        assert not create_node(TYPE, {**DOCUMENT, field: value}).success
+
+    @pytest.mark.parametrize("value", ["a\nb", "a\tb", "a\x00b", "a\x7fb", "trailing\n"])
+    def test_no_control_character_in_a_signer_or_a_note(self, value):
+        assert not create_node(TYPE, {**DOCUMENT, "verified": True, "signer": value}).success
+        assert not create_node(TYPE, {**DOCUMENT, "verified": False, "verification_note": value}).success
+
+
+class TestProducedAtValidatorIsWired:
+    """`{"validation": "function"}` resolves to `validate_produced_at` on the real `full_validate()` path."""
+
+    def _row(self, **fields):
+        return get_model_class(TYPE)(content_digest=DIGEST, **fields)
+
+    @pytest.mark.parametrize(
+        "bad", ["20261015", "2026-10-15", "2026-10-15T15:02:05", 20261015, "2026-10-15T15:02:05Z\n"]
+    )
+    def test_full_validate_refuses_a_bad_timestamp_through_the_function_entry(self, bad):
+        from django.core.exceptions import ValidationError
+
+        assert get_model_class(TYPE).FIELD_VALIDATION_SCHEMA["produced_at"] == {"validation": "function"}
+        with pytest.raises(ValidationError) as raised:
+            self._row(produced_at=bad).full_validate()
+        assert "produced_at" in raised.value.message_dict
+
+    @pytest.mark.parametrize("good", [None, "2026-10-15T15:02:05Z"])
+    def test_full_validate_accepts_null_and_a_full_timestamp(self, good):
+        self._row(produced_at=good).full_validate()
+
+    def test_full_validate_accepts_the_datetime_of_a_loaded_row(self):
+        from datetime import UTC, datetime
+
+        self._row(produced_at=datetime(2026, 10, 15, 15, 2, 5, tzinfo=UTC)).full_validate()
