@@ -24,10 +24,13 @@ import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import unquote
 
 from tap_plugin.computing_core.sbom.batch import EdgeRow, NodeRow, SbomBatch, SbomReport
+
+if TYPE_CHECKING:
+    from tap_plugin.computing_core.sbom.verification import Verification
 
 from tap_grid.natural_key import identity_lock_key
 
@@ -333,13 +336,21 @@ def _canonical(component: Mapping[str, Any]) -> str:
 # --- the parser -------------------------------------------------------------------------------
 
 
-def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
+def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification | None = None) -> SbomBatch:
     """Turn one CycloneDX 1.4 to 1.7 JSON document into the grid's inventory rows.
 
     ``data`` is the document's exact bytes (the digest is over them, not over a re-serialisation).
     ``host_id`` is the entity id of the ``host`` the document describes, resolved by the caller.
+    ``verification`` is the caller's verdict on the document's attestation. Only a ``verified``
+    document is parsed: any other outcome raises ``ValueError`` (record it with ``record_document``
+    instead), and a verified one sets ``verified``, ``signer`` and ``verification_note`` on the
+    document row. With none given the row says nothing about verification (not checked).
     Raises ``SbomParseError`` for anything unreadable; never returns an empty batch.
     """
+    if verification is not None and verification.outcome != "verified":
+        raise ValueError(
+            f"a document whose verification is {verification.outcome!r} is not parsed; use record_document"
+        )
     try:
         host = str(uuid.UUID(str(host_id)))
     except ValueError, AttributeError, TypeError:
@@ -586,6 +597,7 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
             "produced_at": produced or None,
             "generator": generator,
             "component_count": len(components),
+            **(verification.document_fields() if verification is not None else {}),
         },
     )
 

@@ -84,3 +84,31 @@ class TestTheCorpusImports:
         _import(parse_cyclonedx(CORPUS.read_bytes(), host_id=host))
         installs = Edge.objects.filter(edge_type="INSTALLS_PACKAGE__computing_core")
         assert {str(e.from_entity_id) for e in installs} == {host}
+
+
+class TestARefusedDocumentIsRecordedOnTheGrid:
+    """req-computing-core-sbom-parse-11, through the importer: the record exists and is never current."""
+
+    def test_the_row_lands_with_its_outcome_and_the_lineage_has_no_current(self):
+        from tap_plugin.computing_core.sbom import Verification, record_document
+
+        body = CORPUS.read_bytes()
+        subject = "sha256:a9149a88a6239fc7a5351d9854fbff42448d2ed28cc71951a4c2aa2f4aca7750"
+        _import(record_document(body, verification=Verification("refused", "predicate-type"), subject_digest=subject))
+        model = get_model_class("computing_core__sbom_document")
+        (node,) = model.objects.all()
+        assert (node.verified, node.verification_note, node.signer) == (False, "predicate-type", "")
+        assert _count("computing_core__package") == 0
+        assert model.current(subject, node.serial_number) is None
+
+    def test_a_verified_parse_sets_verified_true_and_becomes_current(self):
+        from tap_plugin.computing_core.sbom import Verification
+
+        batch = parse_cyclonedx(
+            CORPUS.read_bytes(), host_id=_host(), verification=Verification("verified", signer="ci@example.org")
+        )
+        _import(batch)
+        model = get_model_class("computing_core__sbom_document")
+        (node,) = model.objects.all()
+        assert (node.verified, node.signer) == (True, "ci@example.org")
+        assert model.current(node.subject_digest, node.serial_number).pk == node.pk

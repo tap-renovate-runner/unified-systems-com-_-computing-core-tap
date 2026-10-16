@@ -7,6 +7,7 @@ an action or any other pipeline can call these with bytes and mappings.
 from tap_plugin.computing_core.sbom.batch import EdgeRow, NodeRow, SbomBatch, SbomReport
 from tap_plugin.computing_core.sbom.builder import build_cyclonedx
 from tap_plugin.computing_core.sbom.parser import SbomParseError, parse_cyclonedx
+from tap_plugin.computing_core.sbom.verification import Verification, record_document
 
 __all__ = [
     "EdgeRow",
@@ -14,6 +15,8 @@ __all__ = [
     "SbomBatch",
     "SbomParseError",
     "SbomReport",
+    "Verification",
     "build_cyclonedx",
     "parse_cyclonedx",
+    "record_document",
 ]
