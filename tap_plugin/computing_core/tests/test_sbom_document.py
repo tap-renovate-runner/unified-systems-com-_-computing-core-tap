@@ -164,7 +164,8 @@ class TestVerifiedIsThreeState:
 
     @pytest.mark.parametrize("state", [True, False, None])
     def test_true_false_and_null_are_accepted(self, state):
-        node = _create(TYPE, {**DOCUMENT, "verified": state})
+        note = {"verification_note": "signer-identity"} if state is False else {}
+        node = _create(TYPE, {**DOCUMENT, "verified": state, **note})
         node.refresh_from_db()
         assert node.verified is state
 
@@ -283,3 +284,64 @@ class TestValuesFitTheColumns:
         node = _create(TYPE, DOCUMENT)
         node.refresh_from_db()
         node.full_validate()
+
+
+@pytest.mark.django_db
+class TestARefusedDocumentNamesItsCheck:
+    """req-computing-core-sbom-document-6: the tri-state outcome is recorded on the node, never dropped."""
+
+    @pytest.mark.parametrize("check", ["signer-identity", "subject-digest", "predicate-type"])
+    def test_a_refused_document_is_stored_with_the_check_that_failed(self, check):
+        node = _create(TYPE, {**DOCUMENT, "verified": False, "verification_note": check})
+        node.refresh_from_db()
+        assert (node.verified, node.verification_note, node.signer) == (False, check, "")
+
+    def test_a_refused_document_without_a_check_is_refused(self):
+        assert not create_node(TYPE, {**DOCUMENT, "verified": False}).success
+        assert not create_node(TYPE, {**DOCUMENT, "verified": False, "verification_note": ""}).success
+
+    def test_a_verified_document_has_no_note(self):
+        assert not create_node(
+            TYPE, {**DOCUMENT, "verified": True, "signer": "ci@example.org", "verification_note": "x"}
+        ).success
+        assert create_node(TYPE, {**DOCUMENT, "verified": True, "signer": "ci@example.org"}).success
+
+    def test_a_document_that_could_not_be_checked_may_say_why_or_not(self):
+        assert create_node(TYPE, {**DOCUMENT, "verified": None}).success
+        assert create_node(
+            TYPE, {**DOCUMENT, "content_digest": "cd" * 32, "verified": None, "verification_note": "no attestation"}
+        ).success
+
+    def test_the_note_is_bounded_to_its_column(self):
+        assert create_node(TYPE, {**DOCUMENT, "verified": False, "verification_note": "n" * 255}).success
+        assert not create_node(
+            TYPE, {**DOCUMENT, "content_digest": "cd" * 32, "verified": False, "verification_note": "n" * 256}
+        ).success
+
+
+@pytest.mark.django_db
+class TestCurrentIsVerifiedOnly:
+    """req-computing-core-sbom-document-7: a refused or unchecked document never supersedes a verified one."""
+
+    def _doc(self, n: int, revision: int, **fields):
+        return _create(TYPE, {**DOCUMENT, "content_digest": f"{n:02x}" * 32, "revision": revision, **fields})
+
+    def test_the_highest_verified_revision_is_current(self):
+        self._doc(1, 1, verified=True, signer="ci")
+        two = self._doc(2, 2, verified=True, signer="ci")
+        assert get_model_class(TYPE).current(SUBJECT, SERIAL).pk == two.pk
+
+    def test_a_higher_revision_that_was_refused_or_unchecked_is_not_current(self):
+        one = self._doc(1, 1, verified=True, signer="ci")
+        self._doc(2, 2, verified=False, verification_note="signer-identity")
+        self._doc(3, 3, verified=None)
+        assert get_model_class(TYPE).current(SUBJECT, SERIAL).pk == one.pk
+
+    def test_a_lineage_with_no_verified_document_has_no_current(self):
+        self._doc(1, 1, verified=False, verification_note="subject-digest")
+        self._doc(2, 2, verified=None)
+        assert get_model_class(TYPE).current(SUBJECT, SERIAL) is None
+
+    def test_another_lineage_is_not_mixed_in(self):
+        self._doc(1, 1, verified=True, signer="ci")
+        assert get_model_class(TYPE).current(SUBJECT, "urn:uuid:11111111-2222-3333-4444-555555555555") is None
