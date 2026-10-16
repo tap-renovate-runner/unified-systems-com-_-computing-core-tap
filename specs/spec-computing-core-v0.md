@@ -694,6 +694,8 @@ An `sbom_document` is the record that one SBOM existed: which bytes (by digest),
 | `component_count` | How many components the document lists. |
 | `signer`, `verified` | The identity of the verified signer, and whether verification ran: `true` verified, `false` ran and failed, `null` not checked. `signer` is non-empty only when `verified` is `true`. Verification happens in the caller against the signer trust list; this node records its outcome and does not decide it. |
 
+**Bounded values.** Every field is bounded to its column: `generator` 255, `spec_version` 16, `signer` 512, `subject_digest` `<algorithm>:<hex>` up to 160, `revision` and `component_count` up to 2147483647, and `produced_at` an RFC 3339 date-time with a zone (`20261015` is refused, because a column would parse it and a reader would misread it). A caller that has a value outside these leaves the field empty and says why; the node refuses it otherwise.
+
 **Lineage and "current".** Documents sharing `(subject_digest, serial_number)` are one lineage; the current one is the highest `revision`. All earlier revisions are kept (ruled 2026-10-15: the files are not in the database, so a retained row costs one node). Two different byte strings that claim the same `(serial_number, revision)` are two nodes, because their digests differ; the grid records the clash and does not pick between them.
 
 **No membership edges.** A document does not draw an edge to each package it lists: that is about 190 edges per revision, repeated every night for no new fact. What a host installs is its `INSTALLS_PACKAGE` edges, and `source_document` on the package names the kind of document that last observed it. The cost is that "exactly what revision N listed" is answered from the file, not the grid.
