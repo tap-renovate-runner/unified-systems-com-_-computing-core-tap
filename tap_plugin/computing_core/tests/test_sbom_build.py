@@ -139,7 +139,10 @@ class TestThrowawayAndDeterministic:
     """req-computing-core-sbom-build-4."""
 
     def test_two_calls_on_the_same_inputs_return_identical_bytes(self, batch: SbomBatch):
-        assert build_cyclonedx(**_inputs(batch)) == build_cyclonedx(**_inputs(batch))
+        inputs = _inputs(batch)
+        first = build_cyclonedx(**inputs)
+        second = build_cyclonedx(**inputs)
+        assert first == second
 
     def test_input_order_does_not_change_the_bytes(self, batch: SbomBatch):
         inputs = _inputs(batch)
@@ -177,8 +180,13 @@ def _grype() -> str | None:
 def _matches(grype: str, document: bytes, workdir: Path, name: str) -> set[tuple[str, str, str]]:
     path = workdir / name
     path.write_bytes(document)
-    result = subprocess.run(  # noqa: S603 — a binary the operator named, fixed arguments
-        [grype, f"sbom:{path}", "-o", "json", "-q"], capture_output=True, check=True, text=True
+    # The one place a test runs a program: the Grype binary the operator named, with fixed
+    # arguments and a file this test just wrote. Nothing from the document reaches the command line.
+    result = subprocess.run(  # noqa: S603  # nosemgrep
+        [grype, f"sbom:{path}", "-o", "json", "-q"],  # nosemgrep
+        capture_output=True,
+        check=True,
+        text=True,
     )
     found = json.loads(result.stdout)["matches"]
     return {(m["vulnerability"]["id"], m["artifact"]["name"], m["artifact"]["version"]) for m in found}

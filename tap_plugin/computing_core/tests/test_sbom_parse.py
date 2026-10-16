@@ -7,9 +7,8 @@ No test needs a database: the parser is pure.
 
 import hashlib
 import json
+import multiprocessing
 import random
-import subprocess
-import sys
 import uuid
 from collections import Counter
 from pathlib import Path
@@ -17,6 +16,7 @@ from pathlib import Path
 import pytest
 from tap_plugin.computing_core.sbom import SbomBatch, SbomParseError, parse_cyclonedx
 from tap_plugin.computing_core.sbom import parser as parser_module
+from tap_plugin.computing_core.tests import _django_free_probe as probe
 
 CORPUS = Path(__file__).resolve().parent / "corpus" / "tap-web-latest-arm64.cdx.json"
 HOST = str(uuid.UUID("01a13c38-4f5e-735c-9cf2-1f159f4282b6"))
@@ -78,54 +78,24 @@ def _ends(batch: SbomBatch, edge_type: str) -> set[tuple[str, str]]:
     return {(e.from_ref or "", e.to_ref or "") for e in batch.edges_of(edge_type)}
 
 
+def _spawned(function, *args):
+    """Run `function` in a fresh interpreter, so one process's imports cannot leak into the probe."""
+    with multiprocessing.get_context("spawn").Pool(1) as pool:
+        return pool.apply(function, args)
+
+
 class TestPureAndDjangoFree:
     """req-computing-core-sbom-parse-1."""
 
-    def test_the_sbom_package_imports_and_parses_with_django_blocked_and_nothing_opened(self, corpus_bytes: bytes):
-        script = r"""
-import builtins, io, json, socket, sys, time
-sys.path[:] = json.loads(sys.argv[1])
-
-class Block:
-    def find_spec(self, name, path=None, target=None):
-        if name == "django" or name.startswith("django."):
-            raise ImportError(f"Django is blocked: {name}")
-
-sys.meta_path.insert(0, Block())
-from tap_plugin.computing_core.sbom import parse_cyclonedx, build_cyclonedx
-
-data = sys.stdin.buffer.read()
-
-def refuse(*args, **kwargs):
-    raise AssertionError("the parser opened a file, a socket or read the clock")
-
-builtins.open = io.open = socket.socket = time.time = time.monotonic = time.time_ns = refuse
-batch = parse_cyclonedx(data, host_id="01a13c38-4f5e-735c-9cf2-1f159f4282b6")
-assert len(batch.nodes) > 100
-assert not [m for m in sys.modules if m == "django" or m.startswith("django.")]
-print("clean", len(batch.nodes), len(batch.edges))
-"""
-        result = subprocess.run(  # noqa: S603 — fixed argv, the interpreter running this test
-            [sys.executable, "-I", "-c", script, json.dumps(sys.path)],
-            input=corpus_bytes,
-            capture_output=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr.decode()
-        assert result.stdout.decode().startswith("clean")
+    def test_the_sbom_package_imports_and_parses_with_django_blocked_and_nothing_opened(self):
+        nodes, edges, django_modules = _spawned(probe.parse_with_django_blocked, str(CORPUS), HOST)
+        assert nodes > 100
+        assert edges > 100
+        assert django_modules == []
 
     def test_the_block_is_real(self):
         """The guard above would pass vacuously if the blocker never fired; prove Django IS refused."""
-        script = (
-            "import sys\n"
-            "class B:\n"
-            "    def find_spec(self, n, p=None, t=None):\n"
-            "        if n == 'django' or n.startswith('django.'): raise ImportError(n)\n"
-            "sys.meta_path.insert(0, B())\n"
-            "try:\n    import django\nexcept ImportError:\n    print('blocked')\n"
-        )
-        result = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, check=False)  # noqa: S603
-        assert result.stdout.decode().strip() == "blocked"
+        assert _spawned(probe.django_is_refused) is True
 
 
 class TestDeterministic:
