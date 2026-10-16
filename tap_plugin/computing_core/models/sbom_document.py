@@ -1,5 +1,7 @@
 """SBOM document — the record that one software bill of materials existed, never its body."""
 
+import re
+from datetime import datetime
 from typing import Any, ClassVar
 
 from django.core.exceptions import ValidationError
@@ -17,7 +19,16 @@ FORMAT_PATTERN = r"^[a-z][a-z0-9-]*$"
 SERIAL_NUMBER_PATTERN = r"^(urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?$"
 
 #: An artifact digest ``<algorithm>:<hex>`` (an image digest ``sha256:…``), or empty.
-SUBJECT_DIGEST_PATTERN = r"^([a-z0-9]+:[0-9a-f]+)?$"
+#: Bounded to the column: at most 31 + 1 + 128 = 160 characters (``subject_digest`` is ``max_length=160``).
+SUBJECT_DIGEST_PATTERN = r"^([a-z0-9]{1,31}:[0-9a-f]{1,128})?$"
+
+#: An RFC 3339 date-time with a time zone, which is what CycloneDX ``metadata.timestamp`` is.
+#: ``format: date-time`` is not enforced by the schema validator, so the shape is spelled out;
+#: ``20261015`` is a valid-looking string the column would parse and a reader would misread.
+TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+
+#: The largest value a ``PositiveIntegerField`` holds on PostgreSQL.
+MAX_COUNTER = 2_147_483_647
 
 
 class SbomDocument(BaseModel):
@@ -69,32 +80,36 @@ class SbomDocument(BaseModel):
     FIELD_CRUD_SCHEMA: ClassVar[dict[str, Any]] = {
         "content_digest": {"type": "string", "pattern": SHA256_HEX_PATTERN},
         "format": {"type": "string", "pattern": FORMAT_PATTERN},
-        "spec_version": {"type": "string"},
+        "spec_version": {"type": "string", "maxLength": 16},
         "serial_number": {"type": "string", "pattern": SERIAL_NUMBER_PATTERN},
-        "revision": {"type": "integer", "minimum": 1},
+        "revision": {"type": "integer", "minimum": 1, "maximum": MAX_COUNTER},
         "subject_digest": {"type": "string", "pattern": SUBJECT_DIGEST_PATTERN},
-        "produced_at": {"type": ["string", "null"], "format": "date-time"},
-        "generator": {"type": "string"},
-        "component_count": {"type": "integer", "minimum": 0},
-        "signer": {"type": "string"},
+        "produced_at": {"type": ["string", "null"], "pattern": TIMESTAMP_PATTERN},
+        "generator": {"type": "string", "maxLength": 255},
+        "component_count": {"type": "integer", "minimum": 0, "maximum": MAX_COUNTER},
+        "signer": {"type": "string", "maxLength": 512},
         "verified": {"type": ["boolean", "null"]},
     }
     FIELD_VALIDATION_SCHEMA: ClassVar[dict[str, Any]] = {
         "content_digest": {"validation": "jsonschema", "schema": {"type": "string", "pattern": SHA256_HEX_PATTERN}},
         "format": {"validation": "jsonschema", "schema": {"type": "string", "pattern": FORMAT_PATTERN}},
-        "spec_version": {"validation": "jsonschema", "schema": {"type": "string"}},
+        "spec_version": {"validation": "jsonschema", "schema": {"type": "string", "maxLength": 16}},
         "serial_number": {
             "validation": "jsonschema",
             "schema": {"type": "string", "pattern": SERIAL_NUMBER_PATTERN},
         },
-        "revision": {"validation": "jsonschema", "schema": {"type": "integer", "minimum": 1}},
+        "revision": {"validation": "jsonschema", "schema": {"type": "integer", "minimum": 1, "maximum": MAX_COUNTER}},
         "subject_digest": {
             "validation": "jsonschema",
             "schema": {"type": "string", "pattern": SUBJECT_DIGEST_PATTERN},
         },
-        "generator": {"validation": "jsonschema", "schema": {"type": "string"}},
-        "component_count": {"validation": "jsonschema", "schema": {"type": "integer", "minimum": 0}},
-        "signer": {"validation": "jsonschema", "schema": {"type": "string"}},
+        "produced_at": {"validation": "function"},
+        "generator": {"validation": "jsonschema", "schema": {"type": "string", "maxLength": 255}},
+        "component_count": {
+            "validation": "jsonschema",
+            "schema": {"type": "integer", "minimum": 0, "maximum": MAX_COUNTER},
+        },
+        "signer": {"validation": "jsonschema", "schema": {"type": "string", "maxLength": 512}},
         "verified": {"validation": "jsonschema", "schema": {"type": ["boolean", "null"]}},
     }
     CREATE_REQUIRED: ClassVar[list[str]] = ["content_digest"]
@@ -158,6 +173,14 @@ class SbomDocument(BaseModel):
 
     class Meta(BaseModel.Meta):
         db_table = "computing_core__sbom_document"
+
+    def validate_produced_at(self) -> None:
+        """``produced_at`` is null, a datetime, or an RFC 3339 string with a zone (a loaded row holds a datetime)."""
+        value = self.produced_at
+        if value is None or isinstance(value, datetime):
+            return
+        if not isinstance(value, str) or not re.match(TIMESTAMP_PATTERN, value):
+            raise ValidationError({"produced_at": ["produced_at must be an RFC 3339 date-time with a time zone."]})
 
     def validate(self) -> None:
         """``signer`` is non-empty only when ``verified`` is true (req-computing-core-sbom-document-3)."""

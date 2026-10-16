@@ -205,6 +205,16 @@ class TestDescribesHost:
         with pytest.raises(InvalidEdgeError):
             create_edge(nodes[src].entity, nodes[dst].entity, "DESCRIBES_HOST__computing_core")
 
+    def test_nothing_may_point_at_a_document(self):
+        """`INBOUND_EDGES = []` is what closes the target side: a wildcard edge from an open type is refused.
+
+        `GENERATES_FILE` accepts any source and any target and `program` declares no edges, so the
+        only thing that can refuse program -> sbom_document is the document's own empty declaration.
+        """
+        program = _create("computing_core__program", {"program_name": "syft"})
+        with pytest.raises(InvalidEdgeError):
+            create_edge(program.entity, _create(TYPE, DOCUMENT).entity, "GENERATES_FILE__computing_core")
+
     def test_declares_the_plain_identity_and_no_properties(self):
         definition = json.loads(EDGE.read_text())
         assert definition["identity"] == {"discriminators": []}
@@ -228,3 +238,48 @@ class TestNoDocumentBody:
     @pytest.mark.parametrize("key", ["components", "document", "body", "bom", "configuration"])
     def test_a_create_carrying_one_is_refused(self, key):
         assert not create_node(TYPE, {**DOCUMENT, key: {"anything": 1}}).success
+
+
+@pytest.mark.django_db
+class TestValuesFitTheColumns:
+    """A value the column cannot hold, or a timestamp a reader would misread, is refused at the model."""
+
+    @pytest.mark.parametrize(
+        ("field", "bad"),
+        [
+            ("produced_at", "20261015"),
+            ("produced_at", "2026-10-15"),
+            ("produced_at", "2026-10-15T15:02:05"),  # no zone
+            ("produced_at", 20261015),
+            ("subject_digest", "sha256:" + "a" * 129),
+            ("subject_digest", "sha256:"),
+            ("subject_digest", "x" * 32 + ":" + "a" * 8),
+            ("generator", "g" * 256),
+            ("spec_version", "1" * 17),
+            ("revision", 2**31),
+            ("component_count", 2**31),
+            ("signer", "s" * 513),
+        ],
+    )
+    def test_it_is_refused(self, field, bad):
+        assert not create_node(TYPE, {**DOCUMENT, field: bad, "verified": True}).success
+
+    @pytest.mark.parametrize("good", ["2026-10-15T15:02:05Z", "2026-10-15T15:02:05.123+02:00", None])
+    def test_a_full_timestamp_or_null_is_accepted(self, good):
+        assert create_node(TYPE, {**DOCUMENT, "produced_at": good}).success
+
+    def test_the_widest_values_that_fit_are_accepted(self):
+        widest = {
+            **DOCUMENT,
+            "subject_digest": "a" * 31 + ":" + "b" * 128,
+            "generator": "g" * 255,
+            "spec_version": "1" * 16,
+            "revision": 2**31 - 1,
+            "component_count": 2**31 - 1,
+        }
+        assert create_node(TYPE, widest).success
+
+    def test_a_loaded_row_still_validates_after_its_timestamp_became_a_datetime(self):
+        node = _create(TYPE, DOCUMENT)
+        node.refresh_from_db()
+        node.full_validate()
