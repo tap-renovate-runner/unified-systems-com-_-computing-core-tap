@@ -89,6 +89,7 @@ class SbomDocument(BaseModel):
         "component_count": {"type": "integer", "minimum": 0, "maximum": MAX_COUNTER},
         "signer": {"type": "string", "maxLength": 512},
         "verified": {"type": ["boolean", "null"]},
+        "verification_note": {"type": "string", "maxLength": 255},
     }
     FIELD_VALIDATION_SCHEMA: ClassVar[dict[str, Any]] = {
         "content_digest": {"validation": "jsonschema", "schema": {"type": "string", "pattern": SHA256_HEX_PATTERN}},
@@ -111,6 +112,7 @@ class SbomDocument(BaseModel):
         },
         "signer": {"validation": "jsonschema", "schema": {"type": "string", "maxLength": 512}},
         "verified": {"validation": "jsonschema", "schema": {"type": ["boolean", "null"]}},
+        "verification_note": {"validation": "jsonschema", "schema": {"type": "string", "maxLength": 255}},
     }
     CREATE_REQUIRED: ClassVar[list[str]] = ["content_digest"]
 
@@ -171,6 +173,17 @@ class SbomDocument(BaseModel):
         help_text="True verified, False verification ran and failed, Null not checked. The caller decides; this records it.",
     )
 
+    verification_note = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=(
+            "Why the document is not verified: for a refused one (verified false) the failing check "
+            "(signer-identity, subject-digest, predicate-type); for one that could not be checked "
+            "(verified null) the reason. Empty when verified is true."
+        ),
+    )
+
     class Meta(BaseModel.Meta):
         db_table = "computing_core__sbom_document"
 
@@ -186,6 +199,24 @@ class SbomDocument(BaseModel):
         """``signer`` is non-empty only when ``verified`` is true (req-computing-core-sbom-document-3)."""
         if self.signer and self.verified is not True:
             raise ValidationError({"signer": ["signer may be set only when verified is true."]})
+        if self.verified is True and self.verification_note:
+            raise ValidationError({"verification_note": ["a verified document has no verification note."]})
+        if self.verified is False and not self.verification_note:
+            raise ValidationError({"verification_note": ["a refused document names the check that failed."]})
+
+    @classmethod
+    def current(cls, subject_digest: str, serial_number: str) -> SbomDocument | None:
+        """The current document of one lineage: the highest ``revision`` among VERIFIED documents.
+
+        A document that was refused or could not be checked (``verified`` false or null) is kept
+        on the grid but is never current: its contents were not trusted, so it cannot supersede one
+        that was. ``None`` where the lineage has no verified document.
+        """
+        return (
+            cls.objects.filter(subject_digest=subject_digest, serial_number=serial_number, verified=True)
+            .order_by("-revision", "content_digest")
+            .first()
+        )
 
     def get_name(self) -> str:
         return f"sbom {self.content_digest[:12]} r{self.revision}".strip()
