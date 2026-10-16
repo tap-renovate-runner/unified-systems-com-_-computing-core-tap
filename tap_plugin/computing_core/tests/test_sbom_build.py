@@ -210,8 +210,10 @@ def _matches(grype: str, document: bytes, workdir: Path, name: str) -> set[tuple
     # GRYPE_DB_AUTO_UPDATE=false: the test must not reach the network; it uses the database the
     # operator already has (a missing one fails the test loudly rather than skipping it).
     env = {**os.environ, "GRYPE_DB_AUTO_UPDATE": "false", "GRYPE_CHECK_FOR_APP_UPDATE": "false"}
-    command = [grype, f"sbom:{path}", "-o", "json", "-q"]  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
-    result = subprocess.run(command, capture_output=True, check=True, text=True, env=env)  # noqa: S603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+    command = [grype, f"sbom:{path}", "-o", "json", "-q"]
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+    result = subprocess.run(command, capture_output=True, check=True, text=True, env=env)  # noqa: S603
     found = json.loads(result.stdout)["matches"]
     return {(m["vulnerability"]["id"], m["artifact"]["name"], m["artifact"]["version"]) for m in found}
 
