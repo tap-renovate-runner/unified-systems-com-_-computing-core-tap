@@ -31,6 +31,7 @@ LIBRARY = {
     "path": "/usr/lib/ossl-modules/fips.so",
 }
 SOURCE_PACKAGE = {"ecosystem": "apk", "name": "glibc", "version": "2.44-r6"}
+SBOM_DOCUMENT = {"content_digest": "ab" * 32}
 WOLFI = {"os_id": "wolfi", "version_id": "20230201", "build_id": "sha256:" + "a" * 64, "rolling": True}
 PROVIDER = {
     "scope": "tap-web",
@@ -85,6 +86,71 @@ class TestPackage:
         assert create_node("computing_core__package", {**PACKAGE, "ecosystem": "pypi"}).success
         assert not create_node("computing_core__package", {**PACKAGE, "ecosystem": "APK"}).success
         assert not create_node("computing_core__package", {**PACKAGE, "ecosystem": ""}).success
+
+    def test_whole_purl_is_stored_as_given(self):
+        """req-computing-core-package-6: arch, distro and upstream survive a write and a read."""
+        purl = "pkg:apk/wolfi/libssl3@3.6.4-r8?arch=aarch64&distro=wolfi-20230201&upstream=openssl"
+        node = _create("computing_core__package", {**PACKAGE, "name": "libssl3", "purl": purl})
+        node.refresh_from_db()
+        assert node.purl == purl
+
+    def test_cpe_candidates_default_to_the_empty_list(self):
+        """req-computing-core-package-7."""
+        node = _create("computing_core__package", PACKAGE)
+        node.refresh_from_db()
+        assert node.cpe_candidates == []
+
+    def test_cpe_candidates_hold_a_list_of_cpe23_names(self):
+        candidates = [
+            "cpe:2.3:a:libssl3:libssl:3.6.4-r8:*:*:*:*:*:*:*",
+            "cpe:2.3:a:libssl:libssl:3.6.4-r8:*:*:*:*:*:*:*",
+        ]
+        node = _create(
+            "computing_core__package",
+            {**PACKAGE, "cpe": "cpe:2.3:a:libssl3:libssl3:3.6.4-r8:*:*:*:*:*:*:*", "cpe_candidates": candidates},
+        )
+        node.refresh_from_db()
+        assert node.cpe_candidates == candidates
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "cpe:2.3:a:x:y:1:*:*:*:*:*:*:*",  # a bare string, not a list
+            ["cpe:/a:x:y:1"],  # CPE 2.2, not 2.3
+            ["not a cpe"],
+            [None],
+            [5],
+            ["cpe:2.3:a:x:y:1:*:*:*:*:*:*:*", "cpe:2.3:a:x:y:1:*:*:*:*:*:*:*"],  # repeated entry
+        ],
+    )
+    def test_cpe_candidates_refuse_anything_else(self, bad):
+        assert not create_node("computing_core__package", {**PACKAGE, "cpe_candidates": bad}).success
+
+    def test_cpe_candidates_never_repeat_cpe(self):
+        cpe = "cpe:2.3:a:x:y:1:*:*:*:*:*:*:*"
+        assert not create_node("computing_core__package", {**PACKAGE, "cpe": cpe, "cpe_candidates": [cpe]}).success
+
+    def test_cpe_candidates_are_declared_in_both_schemas(self):
+        """A JSON column with no schema is `{type: object}` and blocks strict validation."""
+        model = get_model_class("computing_core__package")
+        assert model.FIELD_CRUD_SCHEMA["cpe_candidates"]["type"] == "array"
+        assert model.FIELD_VALIDATION_SCHEMA["cpe_candidates"]["schema"]["type"] == "array"
+
+    def test_candidates_are_not_identity(self):
+        node = _create("computing_core__package", PACKAGE)
+        node.cpe_candidates = ["cpe:2.3:a:glibc:glibc:2.44:*:*:*:*:*:*:*"]
+        node.save()
+        found = get_model_class("computing_core__package").find_existing(
+            ecosystem="apk", name="glibc", version="2.44-r6"
+        )
+        assert found.pk == node.pk
+
+    def test_architecture_is_one_value_never_a_join(self):
+        """req-computing-core-package-8: `aarch64, x86_64` in one column is refused."""
+        for one in ("x86_64", "aarch64", "noarch", ""):
+            assert create_node("computing_core__package", {**PACKAGE, "name": f"ok-{one}", "architecture": one}).success
+        for joined in ("aarch64, x86_64", "aarch64,x86_64", "x86_64 aarch64"):
+            assert not create_node("computing_core__package", {**PACKAGE, "architecture": joined}).success
 
 
 @pytest.mark.django_db
@@ -266,6 +332,8 @@ class TestEdges:
         return {
             "host": _create("computing_core__host", HOST),
             "package": _create("computing_core__package", PACKAGE),
+            "dependency": _create("computing_core__package", {**PACKAGE, "name": "glibc-dev"}),
+            "sbom": _create("computing_core__sbom_document", SBOM_DOCUMENT),
             "source_package": _create("computing_core__source_package", SOURCE_PACKAGE),
             "library": _create("computing_core__library", LIBRARY),
             "program": _create("computing_core__program", {"program_name": "python3.14"}),
@@ -279,6 +347,8 @@ class TestEdges:
             ("host", "INSTALLS_PACKAGE", "package"),
             ("package", "SHIPS_LIBRARY", "library"),
             ("package", "DERIVES_FROM_SOURCE_PACKAGE", "source_package"),
+            ("package", "REQUIRES_PACKAGE", "dependency"),
+            ("sbom", "DESCRIBES_HOST", "host"),
             ("program", "LOADS_LIBRARY", "library"),
             ("host", "RUNS_OPERATING_SYSTEM", "os"),
             ("library", "CARRIES_CRYPTO_PROVIDER", "provider"),
@@ -303,6 +373,14 @@ class TestEdges:
             ("host", "DERIVES_FROM_SOURCE_PACKAGE", "source_package"),
             ("package", "DERIVES_FROM_SOURCE_PACKAGE", "library"),
             ("library", "DERIVES_FROM_SOURCE_PACKAGE", "source_package"),
+            ("package", "REQUIRES_PACKAGE", "library"),
+            ("library", "REQUIRES_PACKAGE", "package"),
+            ("host", "REQUIRES_PACKAGE", "package"),
+            ("package", "REQUIRES_PACKAGE", "source_package"),
+            ("host", "DESCRIBES_HOST", "sbom"),
+            ("sbom", "DESCRIBES_HOST", "package"),
+            ("package", "DESCRIBES_HOST", "host"),
+            ("sbom", "INSTALLS_PACKAGE", "package"),
         ],
     )
     def test_the_wrong_way_round_or_wrong_type_is_refused(self, src, edge, dst):
@@ -319,6 +397,8 @@ class TestEdges:
             "INSTALLS_PACKAGE",
             "SHIPS_LIBRARY",
             "DERIVES_FROM_SOURCE_PACKAGE",
+            "REQUIRES_PACKAGE",
+            "DESCRIBES_HOST",
             "LOADS_LIBRARY",
             "RUNS_OPERATING_SYSTEM",
             "CARRIES_CRYPTO_PROVIDER",
@@ -337,14 +417,24 @@ class TestEdges:
         create_edge(n["package"].entity, n["library"].entity, "SHIPS_LIBRARY__computing_core")
         create_edge(n["package"].entity, n["source_package"].entity, "DERIVES_FROM_SOURCE_PACKAGE__computing_core")
         create_edge(n["library"].entity, n["provider"].entity, "CARRIES_CRYPTO_PROVIDER__computing_core")
+        create_edge(n["package"].entity, n["dependency"].entity, "REQUIRES_PACKAGE__computing_core")
+        create_edge(n["sbom"].entity, n["host"].entity, "DESCRIBES_HOST__computing_core")
 
         assert delete_node(n["host"].entity_id, cascade="contained").success
 
         n["host"].entity.refresh_from_db()
         assert n["host"].entity.deleted_at is not None
-        for name in ("package", "source_package", "library", "os", "provider"):
+        for name in ("package", "dependency", "sbom", "source_package", "library", "os", "provider"):
             n[name].entity.refresh_from_db()
             assert n[name].entity.deleted_at is None, name
+
+    def test_retiring_a_package_leaves_the_packages_it_required(self):
+        """req-computing-core-package-dependency-2: a dependency outlives the package that named it."""
+        n = self._nodes()
+        create_edge(n["package"].entity, n["dependency"].entity, "REQUIRES_PACKAGE__computing_core")
+        assert delete_node(n["package"].entity_id, cascade="contained").success
+        n["dependency"].entity.refresh_from_db()
+        assert n["dependency"].entity.deleted_at is None
 
     def test_one_source_package_has_many_packages_and_a_self_origin_still_gets_the_edge(self):
         """req-computing-core-source-package-4: the glibc case from the issue, plus a package that is its own source."""

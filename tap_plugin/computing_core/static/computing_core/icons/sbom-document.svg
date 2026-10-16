@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Original glyph, drawn for this plugin (no third-party artwork): a page with a fingerprint-style digest bar, the record that one SBOM existed. -->
+<svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+  <rect width="80" height="80" rx="8" fill="#5A7A96"/>
+  <path d="M24 16h22l12 12v36H24z" fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linejoin="round"/>
+  <path d="M46 16v12h12M32 40h18M32 49h18M32 58h10" fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

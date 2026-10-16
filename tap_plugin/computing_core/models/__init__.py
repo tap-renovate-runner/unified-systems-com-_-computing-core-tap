@@ -14,6 +14,7 @@ from tap_plugin.computing_core.models.port import Port
 from tap_plugin.computing_core.models.private_key import PrivateKey
 from tap_plugin.computing_core.models.program import Program
 from tap_plugin.computing_core.models.public_key import PublicKey
+from tap_plugin.computing_core.models.sbom_document import SbomDocument
 from tap_plugin.computing_core.models.source_package import SourcePackage
 from tap_plugin.computing_core.models.tcp_connection import TcpConnection
 from tap_plugin.computing_core.models.web_document import WebDocument
@@ -34,6 +35,7 @@ __all__ = [
     "PrivateKey",
     "Program",
     "PublicKey",
+    "SbomDocument",
     "SourcePackage",
     "TcpConnection",
     "WebDocument",

@@ -1,0 +1,17 @@
+{
+  "slug": "DESCRIBES_HOST__computing_core",
+  "name": "Describes Host",
+  "description": "This SBOM document inventories this host (a container image's host with kind container): the software the document lists is what the host has installed. A reference, not containment: the host outlives any one document, and each revision of a scan is a document of its own. The document body is not stored on the grid.",
+  "sources": [
+    "computing_core__sbom_document"
+  ],
+  "targets": [
+    "computing_core__host"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}
