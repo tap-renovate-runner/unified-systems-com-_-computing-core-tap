@@ -101,10 +101,28 @@ class TestTheMatchingFieldsAreEmitted:
         refs = [c["bom-ref"] for c in json.loads(built)["components"]]
         assert len(refs) == len(set(refs))
 
-    def test_a_package_with_no_purl_gets_a_deterministic_handle(self):
+    def test_a_package_with_no_purl_is_written_with_a_minimal_purl(self):
+        """Without one a reader could not tell its package manager."""
         document = json.loads(build_cyclonedx([{"ecosystem": "apk", "name": "zlib", "version": "1"}]))
-        assert document["components"][0]["bom-ref"] == "computing-core:package:apk/zlib/1"
-        assert "purl" not in document["components"][0]
+        assert document["components"][0]["purl"] == "pkg:apk/zlib@1"
+        assert document["components"][0]["bom-ref"] == "pkg:apk/zlib@1"
+
+    def test_duplicate_package_keys_are_one_component_whatever_the_order(self):
+        one = {"ecosystem": "apk", "name": "zlib", "version": "1", "purl": "pkg:apk/wolfi/zlib@1?arch=x86_64"}
+        two = {**one, "purl": "pkg:apk/wolfi/zlib@1?arch=aarch64"}
+        forward, backward = build_cyclonedx([one, two]), build_cyclonedx([two, one])
+        assert forward == backward
+        components = json.loads(forward)["components"]
+        assert [c["purl"] for c in components] == ["pkg:apk/wolfi/zlib@1?arch=aarch64"]
+
+    def test_a_lone_surrogate_in_an_input_cannot_break_the_encoding(self):
+        document = build_cyclonedx([{"ecosystem": "apk", "name": "z\ud800", "version": "1"}])
+        assert document.isascii()
+
+    def test_non_ascii_text_survives_as_an_escape(self):
+        document = build_cyclonedx([{"ecosystem": "pypi", "name": "caf\u00e9", "version": "1"}])
+        assert document.isascii()
+        assert json.loads(document)["components"][0]["name"] == "caf\u00e9"
 
 
 class TestRoundTrip:
@@ -125,6 +143,13 @@ class TestRoundTrip:
         assert len(again.nodes_of("computing_core__source_package")) == 72
         assert len(again.edges_of("DERIVES_FROM_SOURCE_PACKAGE__computing_core")) == 102
         assert "syft:metadata:originPackage" not in built.decode()
+
+    def test_a_package_with_no_purl_comes_back_as_the_same_package_with_its_own_origin(self):
+        """The minimal purl is added, and with no `upstream=` the source package is the package's own name."""
+        row = {"ecosystem": "apk", "name": "libssl3", "version": "3", "architecture": "", "cpe_candidates": []}
+        again = parse_cyclonedx(build_cyclonedx([row]), host_id=HOST)
+        assert [n.properties["name"] for n in again.nodes_of(PACKAGE)] == ["libssl3"]
+        assert [n.properties["name"] for n in again.nodes_of("computing_core__source_package")] == ["libssl3"]
 
     def test_the_document_row_differs_because_the_bytes_do(self, batch: SbomBatch, built: bytes):
         again = parse_cyclonedx(built, host_id=HOST)
@@ -182,11 +207,15 @@ def _matches(grype: str, document: bytes, workdir: Path, name: str) -> set[tuple
     path.write_bytes(document)
     # The one place a test runs a program: the Grype binary the operator named, with fixed
     # arguments and a file this test just wrote. Nothing from the document reaches the command line.
-    result = subprocess.run(  # noqa: S603  # nosemgrep
-        [grype, f"sbom:{path}", "-o", "json", "-q"],  # nosemgrep
+    # GRYPE_DB_AUTO_UPDATE=false: the test must not reach the network; it uses the database the
+    # operator already has (a missing one fails the test loudly rather than skipping it).
+    env = {**os.environ, "GRYPE_DB_AUTO_UPDATE": "false", "GRYPE_CHECK_FOR_APP_UPDATE": "false"}
+    result = subprocess.run(  # noqa: S603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        [grype, f"sbom:{path}", "-o", "json", "-q"],
         capture_output=True,
         check=True,
         text=True,
+        env=env,
     )
     found = json.loads(result.stdout)["matches"]
     return {(m["vulnerability"]["id"], m["artifact"]["name"], m["artifact"]["version"]) for m in found}

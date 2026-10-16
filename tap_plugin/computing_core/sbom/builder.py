@@ -7,6 +7,8 @@ deployed: a document carrying exactly the fields scanners match on (the whole pu
 nothing to the grid and nothing to disk, reads no clock and invents no identifier, so the same
 inputs give the same bytes.
 
+The output is ASCII (non-ASCII characters are JSON escapes), so no input can make the encode fail.
+
 Inputs are plain mappings of the node properties (``ecosystem``, ``name``, ``version``, ``purl``,
 ``cpe``, ``cpe_candidates``, ``architecture``, ``license``, ...), so this module imports no Django.
 
@@ -18,6 +20,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from typing import Any, Final
+from urllib.parse import quote
 
 #: Every scanner tried reads 1.6; Trivy 0.70.0 could not decode 1.7 (tap#1036).
 SPEC_VERSION: Final[str] = "1.6"
@@ -34,6 +37,21 @@ def _key(properties: Properties) -> PackageKey:
 
 def _license(expression: str) -> list[dict[str, str]]:
     return [{"expression": expression}] if expression else []
+
+
+def _one_per_key(rows: Iterable[Properties]) -> list[Properties]:
+    """One row per ``(ecosystem, name, version)``, in key order.
+
+    Two rows with one key are one package on the grid (the key is its identity), so they are one
+    component here. Which row is kept does not depend on input order: the smallest by purl, then by
+    the rows' own text.
+    """
+    chosen: dict[PackageKey, Properties] = {}
+    for row in rows:
+        rank = lambda r: (str(r.get("purl") or ""), json.dumps(r, sort_keys=True, default=str))  # noqa: E731
+        if _key(row) not in chosen or rank(row) < rank(chosen[_key(row)]):
+            chosen[_key(row)] = row
+    return [chosen[key] for key in sorted(chosen)]
 
 
 def build_cyclonedx(
@@ -53,20 +71,30 @@ def build_cyclonedx(
     ref_of: dict[PackageKey, str] = {}
     used: set[str] = set()
 
-    def bom_ref(properties: Properties, kind: str) -> str:
+    def bom_ref(properties: Properties, kind: str, purl: str) -> str:
         """The purl where there is one and it is unused, else a deterministic handle."""
-        purl = str(properties.get("purl") or "")
         handle = purl if purl and purl not in used else f"computing-core:{kind}:{'/'.join(_key(properties))}"
         used.add(handle)
         return handle
 
-    for properties in sorted(packages, key=_key):
+    for properties in _one_per_key(packages):
         ecosystem, name, version = _key(properties)
-        ref = bom_ref(properties, "package")
+        # A package the grid holds with no purl still needs one, or a reader (this parser, a
+        # scanner) would not know its package manager: the minimal purl is written for the
+        # document only, and the grid's own row is untouched.
+        purl = str(
+            properties.get("purl")
+            or f"pkg:{ecosystem}/{quote(name, safe='', errors='replace')}@{quote(version, safe='', errors='replace')}"
+        )
+        ref = bom_ref(properties, "package", purl)
         ref_of[_key(properties)] = ref
-        component: dict[str, Any] = {"type": "library", "bom-ref": ref, "name": name, "version": version}
-        if properties.get("purl"):
-            component["purl"] = properties["purl"]
+        component: dict[str, Any] = {
+            "type": "library",
+            "bom-ref": ref,
+            "name": name,
+            "version": version,
+            "purl": purl,
+        }
         if properties.get("cpe"):
             component["cpe"] = properties["cpe"]
         licenses = _license(str(properties.get("license") or ""))
@@ -77,9 +105,9 @@ def build_cyclonedx(
             component["properties"] = candidates
         components.append(component)
 
-    for properties in sorted(libraries, key=_key):
+    for properties in _one_per_key(libraries):
         ecosystem, name, version = _key(properties)
-        ref = bom_ref(properties, "library")
+        ref = bom_ref(properties, "library", str(properties.get("purl") or ""))
         component = {"type": "library", "bom-ref": ref, "name": name, "version": version}
         if properties.get("purl"):
             component["purl"] = properties["purl"]
@@ -125,4 +153,4 @@ def build_cyclonedx(
         "components": components,
         "dependencies": dependencies,
     }
-    return json.dumps(document, sort_keys=True, indent=1, ensure_ascii=False).encode("utf-8")
+    return json.dumps(document, sort_keys=True, indent=1, ensure_ascii=True).encode("utf-8")

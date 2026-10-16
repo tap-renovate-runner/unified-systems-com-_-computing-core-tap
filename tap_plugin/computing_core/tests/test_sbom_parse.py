@@ -13,10 +13,13 @@ import uuid
 from collections import Counter
 from pathlib import Path
 
+import jsonschema
 import pytest
 from tap_plugin.computing_core.sbom import SbomBatch, SbomParseError, parse_cyclonedx
 from tap_plugin.computing_core.sbom import parser as parser_module
 from tap_plugin.computing_core.tests import _django_free_probe as probe
+
+from tap_grid.registry import get_model_class
 
 CORPUS = Path(__file__).resolve().parent / "corpus" / "tap-web-latest-arm64.cdx.json"
 HOST = str(uuid.UUID("01a13c38-4f5e-735c-9cf2-1f159f4282b6"))
@@ -302,36 +305,15 @@ class TestMatchingFieldsSurvive:
             assert len(set(props["cpe_candidates"])) == len(props["cpe_candidates"])
             assert all(c.startswith("cpe:2.3:") for c in props["cpe_candidates"])
 
-    def test_every_node_property_set_is_valid_for_its_model_field_names(self, batch: SbomBatch):
-        allowed = {
-            PACKAGE: {
-                "ecosystem",
-                "name",
-                "version",
-                "architecture",
-                "purl",
-                "cpe",
-                "cpe_candidates",
-                "license",
-                "source_document",
-            },
-            LIBRARY: {"ecosystem", "name", "version", "purl", "cpe", "license", "source_kind", "source_url", "path"},
-            SOURCE: {"ecosystem", "name", "version"},
-            OS: {"os_id", "version_id", "build_id", "name"},
-            DOCUMENT: {
-                "content_digest",
-                "format",
-                "spec_version",
-                "serial_number",
-                "revision",
-                "subject_digest",
-                "produced_at",
-                "generator",
-                "component_count",
-            },
-        }
+    def test_every_emitted_property_is_a_model_field_and_passes_the_models_own_schema(self, batch: SbomBatch):
+        """Derived from the models, so a rename, a new constraint or a changed limit fails here."""
         for node in batch.nodes:
-            assert set(node.properties) <= allowed[node.entity_type], node.entity_type
+            model = get_model_class(node.entity_type)
+            fields = {f.name for f in model._meta.concrete_fields}
+            assert set(node.properties) <= fields, node.entity_type
+            for name, value in node.properties.items():
+                jsonschema.validate(value, model.FIELD_CRUD_SCHEMA[name])
+            assert node.name == node.properties.get("name", node.name)
 
 
 class TestOneArchitectureNeverAJoin:
@@ -350,28 +332,70 @@ class TestOneArchitectureNeverAJoin:
         assert any("is not one architecture" in note for note in batch.report.notes)
 
 
+CYCLONEDX = {"bomFormat": "CycloneDX", "specVersion": "1.6"}
+
+
+def _body(**extra) -> bytes:
+    return json.dumps({**CYCLONEDX, **extra}).encode()
+
+
+#: (body, a fragment only that case's message contains). The messages must also differ from each other.
+UNREADABLE = {
+    "empty": (b"", "the document is empty"),
+    "not json": (b"not json at all", "not JSON: Expecting value"),
+    "undecodable": (b'{"a": "\xff"}', "codec can't decode byte 0xff"),
+    "top level is a list": (b"[1, 2, 3]", "top level is list"),
+    "no bomFormat": (b'{"hello": "world"}', "bomFormat is None"),
+    "wrong bomFormat": (b'{"bomFormat": "SPDX", "specVersion": "1.6"}', "bomFormat is 'SPDX'"),
+    "no components": (_body(), "lists no components array"),
+    "empty components": (_body(components=[]), "an empty inventory is refused"),
+    "a component not an object": (_body(components=[1]), "a component is not an object"),
+    "NaN": (b'{"bomFormat": "CycloneDX", "specVersion": "1.6", "components": [], "x": NaN}', "contains NaN"),
+    "repeated key": (b'{"bomFormat": "CycloneDX", "bomFormat": "CycloneDX"}', "appears twice"),
+    "integer literal over the digit limit": (
+        b'{"bomFormat": "CycloneDX", "x": ' + b"1" * 5000 + b"}",
+        "Exceeds the limit",
+    ),
+    "lone surrogate": (_body(components=[{"name": "\ud800"}]), "not valid Unicode"),
+}
+
+
 class TestUnreadableIsRefusedNotEmpty:
     """req-computing-core-sbom-parse-6."""
 
-    @pytest.mark.parametrize(
-        ("body", "why"),
-        [
-            (b"", "empty"),
-            (b"   \n", "empty"),
-            (b"not json at all", "not JSON"),
-            (b"\xff\xfe\x00garbage", "not JSON"),
-            (b"[1, 2, 3]", "top level is list"),
-            (b'{"hello": "world"}', "bomFormat"),
-            (b'{"bomFormat": "CycloneDX", "specVersion": "1.6"}', "no components array"),
-            (b'{"bomFormat": "CycloneDX", "specVersion": "1.6", "components": []}', "no components"),
-            (b'{"bomFormat": "CycloneDX", "specVersion": "1.6", "components": [], "x": NaN}', "NaN"),
-            (b'{"bomFormat": "CycloneDX", "bomFormat": "CycloneDX"}', "appears twice"),
-        ],
-    )
-    def test_each_is_refused_naming_why(self, body: bytes, why: str):
+    @pytest.mark.parametrize("case", sorted(UNREADABLE))
+    def test_each_is_refused_with_its_own_reason(self, case: str):
+        body, fragment = UNREADABLE[case]
         with pytest.raises(SbomParseError) as raised:
             parse_cyclonedx(body, host_id=HOST)
-        assert why.split()[0].lower() in str(raised.value).lower()
+        assert fragment in str(raised.value)
+
+    def test_no_two_cases_share_a_message(self):
+        messages = []
+        for body, _ in UNREADABLE.values():
+            with pytest.raises(SbomParseError) as raised:
+                parse_cyclonedx(body, host_id=HOST)
+            messages.append(str(raised.value))
+        assert len(set(messages)) == len(UNREADABLE)
+
+    def test_a_components_value_that_is_not_a_list_is_refused_like_a_missing_one(self):
+        with pytest.raises(SbomParseError, match="lists no components array"):
+            parse_cyclonedx(_body(components=5), host_id=HOST)
+
+    def test_a_lone_surrogate_in_a_key_is_refused_too(self):
+        with pytest.raises(SbomParseError, match="not valid Unicode"):
+            parse_cyclonedx(_body(components=[{"\ud800": 1}]), host_id=HOST)
+
+    def test_only_sbom_parse_error_ever_escapes(self):
+        """Whatever the shape, the exception type is the parser's own."""
+        for body, _ in UNREADABLE.values():
+            with pytest.raises(SbomParseError):
+                parse_cyclonedx(body, host_id=HOST)
+
+    def test_the_real_size_cap_is_8_mib_and_a_body_one_byte_over_is_refused_unparsed(self):
+        assert parser_module.MAX_BYTES == 8 * 1024 * 1024
+        with pytest.raises(SbomParseError, match=r"8388608-byte size cap"):
+            parse_cyclonedx(b" " * (parser_module.MAX_BYTES + 1), host_id=HOST)
 
     def test_a_body_over_the_size_cap_is_refused_naming_the_cap(self, monkeypatch, corpus_bytes: bytes):
         monkeypatch.setattr(parser_module, "MAX_BYTES", 1000)
@@ -492,3 +516,251 @@ class TestDigestOverTheExactBytes:
         b = parse_cyclonedx(reserialised, host_id=HOST).nodes_of(DOCUMENT)[0]
         assert a.properties["content_digest"] != b.properties["content_digest"]
         assert b.properties["content_digest"] == hashlib.sha256(reserialised).hexdigest()
+
+
+def _comp(name="p", version="1", **extra) -> dict:
+    return _lib(name, version, **extra)
+
+
+class TestHostileShapesNeverRaiseAnythingElse:
+    """A field of the wrong shape is ignored and noted; it never raises a TypeError or AttributeError."""
+
+    @pytest.mark.parametrize("value", [5, "text", {"a": 1}, True, 1.5])
+    def test_properties_that_is_not_a_list(self, value):
+        batch = parse_cyclonedx(_doc([_comp(properties=value)]), host_id=HOST)
+        assert any("properties is not a list" in n for n in batch.report.notes)
+        assert len(batch.nodes_of(PACKAGE)) == 1
+
+    @pytest.mark.parametrize("value", [5, "MIT", {"license": {"id": "MIT"}}])
+    def test_licenses_that_is_not_a_list(self, value):
+        batch = parse_cyclonedx(_doc([_comp(licenses=value)]), host_id=HOST)
+        assert any("licenses is not a list" in n for n in batch.report.notes)
+        assert batch.nodes_of(PACKAGE)[0].properties["license"] == ""
+
+    @pytest.mark.parametrize("value", [5, "x", {"ref": "a"}])
+    def test_top_level_dependencies_that_is_not_a_list(self, value):
+        batch = parse_cyclonedx(_doc([_comp()], dependencies=value), host_id=HOST)
+        assert batch.report.skipped_dependencies == {"dependencies is not a list": 1}
+
+    @pytest.mark.parametrize("value", [5, "a", {"a": 1}])
+    def test_depends_on_that_is_not_a_list(self, value):
+        batch = parse_cyclonedx(_doc([_comp()], [{"ref": "p", "dependsOn": value}]), host_id=HOST)
+        assert batch.report.skipped_dependencies == {"dependsOn is not a list": 1}
+
+    def test_unhashable_and_non_string_refs(self):
+        components = [_comp("a", ref="a"), _comp("b", ref="b")]
+        dependencies = [
+            {"ref": {"x": 1}, "dependsOn": ["a"]},
+            {"ref": ["a"], "dependsOn": ["b"]},
+            {"ref": "a", "dependsOn": [{"x": 1}, ["b"], 7, None, "b"]},
+            "not an object",
+            5,
+        ]
+        batch = parse_cyclonedx(_doc(components, dependencies), host_id=HOST)
+        assert len(batch.edges_of("REQUIRES_PACKAGE__computing_core")) == 1
+        assert batch.report.skipped_dependencies["entry is not an object"] == 2
+
+    @pytest.mark.parametrize("field", ["name", "version", "purl", "cpe", "type", "bom-ref"])
+    @pytest.mark.parametrize("value", [5, ["x"], {"a": 1}, None, True])
+    def test_scalar_fields_of_the_wrong_type_are_read_as_absent(self, field, value):
+        component = _comp(ref="ok")
+        component[field] = value
+        try:
+            batch = parse_cyclonedx(_doc([component, _comp("other", ref="other")]), host_id=HOST)
+        except SbomParseError:
+            return  # a refusal is allowed; any other exception type is the failure
+        assert batch.nodes_of(PACKAGE)
+
+    def test_metadata_and_tools_of_the_wrong_shape(self):
+        for metadata in (5, [], {"tools": 5}, {"tools": [5]}, {"tools": {"components": 5}}, {"component": 5}):
+            batch = parse_cyclonedx(_doc([_comp()], metadata=metadata), host_id=HOST)
+            assert batch.nodes_of(DOCUMENT)[0].properties["generator"] == ""
+
+    def test_an_integer_literal_over_the_interpreter_digit_limit_is_a_parse_error(self):
+        with pytest.raises(SbomParseError, match="Exceeds the limit"):
+            parse_cyclonedx(b'{"a": ' + b"9" * 5000 + b"}", host_id=HOST)
+
+
+class TestValuesNeverExceedTheModelColumns:
+    """A value the model would refuse is skipped or left empty with a note, never emitted."""
+
+    @pytest.mark.parametrize(
+        ("component", "reason"),
+        [
+            (_comp("n" * 256), "name longer than 255 characters"),
+            (_comp("n", "v" * 129), "version longer than 128 characters"),
+            (_comp("n", purl="pkg:apk/wolfi/n@1?x=" + "q" * 1010), "purl longer than 1024 characters"),
+            (_comp("n", purl="pkg:" + "a" * 33 + "/n@1"), "purl type longer than 32 characters"),
+        ],
+    )
+    def test_a_component_with_an_over_long_key_field_is_skipped_and_counted(self, component, reason):
+        batch = parse_cyclonedx(_doc([_comp("ok"), component]), host_id=HOST)
+        assert batch.report.skipped_components == {reason: 1}
+        assert [n.properties["name"] for n in batch.nodes_of(PACKAGE)] == ["ok"]
+
+    @pytest.mark.parametrize(
+        ("extra", "field", "note"),
+        [
+            ({"cpe": "cpe:2.3:" + "c" * 510}, "cpe", "cpe is longer than 512"),
+            ({"licenses": [{"expression": "L" * 513}]}, "license", "license is longer than 512"),
+        ],
+    )
+    def test_an_over_long_optional_field_is_left_empty_and_noted(self, extra, field, note):
+        batch = parse_cyclonedx(_doc([_comp(**extra)]), host_id=HOST)
+        assert batch.nodes_of(PACKAGE)[0].properties[field] == ""
+        assert any(note in n for n in batch.report.notes)
+
+    def test_an_over_long_architecture_is_left_empty_and_noted(self):
+        batch = parse_cyclonedx(_doc([_comp(purl="pkg:apk/wolfi/p@1?arch=" + "a" * 33)]), host_id=HOST)
+        assert batch.nodes_of(PACKAGE)[0].properties["architecture"] == ""
+        assert any("is not one architecture" in n for n in batch.report.notes)
+
+    def test_document_fields_over_their_limits_are_left_out_and_noted(self):
+        metadata = {
+            "timestamp": "20261015",
+            "tools": [{"name": "t" * 300, "version": "1"}],
+            "component": {"version": "sha256:" + "a" * 200},
+        }
+        batch = parse_cyclonedx(
+            _doc([_comp()], metadata=metadata, version=2**31, serialNumber="urn:uuid:nope"), host_id=HOST
+        )
+        props = batch.nodes_of(DOCUMENT)[0].properties
+        assert (props["produced_at"], props["generator"], props["subject_digest"]) == (None, "", "")
+        assert (props["revision"], props["serial_number"]) == (1, "")
+        notes = " | ".join(batch.report.notes)
+        for fragment in ("not an RFC 3339", "generator is longer", "document version", "serialNumber"):
+            assert fragment in notes
+
+    def test_an_over_long_operating_system_id_is_skipped_and_counted(self):
+        system = {"type": "operating-system", "name": "o" * 65, "version": "1"}
+        batch = parse_cyclonedx(_doc([_comp(), system]), host_id=HOST)
+        assert sum(batch.report.skipped_components.values()) == 1
+        assert batch.nodes_of(OS) == ()
+
+    def test_the_widest_values_that_fit_are_kept(self):
+        component = _comp("n" * 255, "v" * 128, purl="pkg:apk/wolfi/x@1?arch=" + "a" * 32)
+        batch = parse_cyclonedx(_doc([component]), host_id=HOST)
+        props = batch.nodes_of(PACKAGE)[0].properties
+        assert (len(props["name"]), len(props["version"]), len(props["architecture"])) == (255, 128, 32)
+
+    def test_nothing_emitted_from_a_hostile_document_exceeds_any_model_max_length(self):
+        long = "x" * 600
+        components = [
+            _comp(long[:255], "1", cpe=long, licenses=[{"expression": long}]),
+            _comp("lib", "1", purl="pkg:generic/lib@1", properties=[{"name": "tap:path", "value": long * 3}]),
+            {
+                "type": "operating-system",
+                "name": "wolfi",
+                "version": "1",
+                "properties": [{"name": "syft:distro:prettyName", "value": long}],
+            },
+        ]
+        batch = parse_cyclonedx(_doc(components, metadata={"tools": [{"name": long}]}), host_id=HOST)
+        for node in batch.nodes:
+            model = get_model_class(node.entity_type)
+            for name, value in node.properties.items():
+                limit = getattr(model._meta.get_field(name), "max_length", None)
+                if limit and isinstance(value, str):
+                    assert len(value) <= limit, (node.entity_type, name)
+
+
+class TestNestedComponents:
+    """The corpus has none; these make reading, ordering and counting them observable."""
+
+    def test_a_nested_component_is_read_like_a_top_level_one(self):
+        parent = _comp("parent", ref="parent", components=[_comp("child", ref="child")])
+        nested = parse_cyclonedx(_doc([parent], [{"ref": "parent", "dependsOn": ["child"]}]), host_id=HOST)
+        assert sorted(n.properties["name"] for n in nested.nodes_of(PACKAGE)) == ["child", "parent"]
+        assert len(nested.edges_of("REQUIRES_PACKAGE__computing_core")) == 1
+        assert nested.nodes_of(DOCUMENT)[0].properties["component_count"] == 2
+
+    def test_nesting_does_not_change_which_packages_there_are(self):
+        flat = parse_cyclonedx(_doc([_comp("parent", ref="parent"), _comp("child", ref="child")]), host_id=HOST)
+        nested = parse_cyclonedx(
+            _doc([_comp("parent", ref="parent", components=[_comp("child", ref="child")])]), host_id=HOST
+        )
+        assert flat.nodes_of(PACKAGE) == nested.nodes_of(PACKAGE)
+
+    @pytest.mark.parametrize("value", [5, "x", {"a": 1}, True])
+    def test_a_components_value_that_is_not_a_list_is_counted(self, value):
+        batch = parse_cyclonedx(_doc([_comp("p", components=value)]), host_id=HOST)
+        assert batch.report.skipped_components == {"nested components value is not a list": 1}
+        assert [n.properties["name"] for n in batch.nodes_of(PACKAGE)] == ["p"]
+
+    def test_a_nested_item_that_is_not_an_object_is_refused(self):
+        with pytest.raises(SbomParseError, match="a component is not an object"):
+            parse_cyclonedx(_doc([_comp("p", components=[5])]), host_id=HOST)
+
+    def test_nested_components_count_toward_the_component_cap(self, monkeypatch):
+        monkeypatch.setattr(parser_module, "MAX_COMPONENTS", 2)
+        parent = _comp("p", components=[_comp("a"), _comp("b")])
+        with pytest.raises(SbomParseError, match="component cap"):
+            parse_cyclonedx(_doc([parent]), host_id=HOST)
+
+    def test_reordering_nested_siblings_changes_nothing_but_the_digest(self):
+        kids = [_comp(f"k{i}", ref=f"k{i}") for i in range(5)]
+        one = parse_cyclonedx(_doc([_comp("p", ref="p", components=kids)]), host_id=HOST)
+        two = parse_cyclonedx(_doc([_comp("p", ref="p", components=list(reversed(kids)))]), host_id=HOST)
+        assert one.nodes_of(PACKAGE) == two.nodes_of(PACKAGE)
+
+
+class TestPurlRules:
+    def test_an_upper_case_scheme_is_read_and_the_purl_is_kept_as_given(self):
+        batch = parse_cyclonedx(_doc([_comp(purl="PKG:apk/wolfi/p@1?arch=x86_64")]), host_id=HOST)
+        props = batch.nodes_of(PACKAGE)[0].properties
+        assert (props["ecosystem"], props["architecture"], props["purl"]) == (
+            "apk",
+            "x86_64",
+            "PKG:apk/wolfi/p@1?arch=x86_64",
+        )
+
+    def test_a_repeated_qualifier_is_ignored_and_noted(self):
+        batch = parse_cyclonedx(
+            _doc([_comp(purl="pkg:apk/wolfi/p@1?arch=x86_64&arch=aarch64&upstream=base")]), host_id=HOST
+        )
+        assert batch.nodes_of(PACKAGE)[0].properties["architecture"] == ""
+        assert [n.properties["name"] for n in batch.nodes_of(SOURCE)] == ["base"]
+        assert any("'arch' appears more than once" in n for n in batch.report.notes)
+
+    def test_qualifier_keys_are_case_insensitive(self):
+        batch = parse_cyclonedx(_doc([_comp(purl="pkg:apk/wolfi/p@1?ARCH=x86_64")]), host_id=HOST)
+        assert batch.nodes_of(PACKAGE)[0].properties["architecture"] == "x86_64"
+
+    @pytest.mark.parametrize("bad", ["%zz", "%ff", "a b", "../x", "-x", "a/b", "%00"])
+    def test_an_upstream_that_is_not_a_package_name_never_becomes_a_source_package(self, bad):
+        batch = parse_cyclonedx(_doc([_comp("p", purl=f"pkg:apk/wolfi/p@1?upstream={bad}")]), host_id=HOST)
+        assert [n.properties["name"] for n in batch.nodes_of(SOURCE)] == ["p"]
+        assert batch.report.notes
+
+    def test_an_encoded_upstream_is_decoded(self):
+        batch = parse_cyclonedx(_doc([_comp("p", purl="pkg:apk/wolfi/p@1?upstream=open%73sl")]), host_id=HOST)
+        assert [n.properties["name"] for n in batch.nodes_of(SOURCE)] == ["openssl"]
+
+    def test_a_bad_origin_property_falls_through_to_the_qualifier(self):
+        component = _comp(
+            "p",
+            purl="pkg:apk/wolfi/p@1?upstream=good",
+            properties=[{"name": "syft:metadata:originPackage", "value": "not a name!"}],
+        )
+        batch = parse_cyclonedx(_doc([component]), host_id=HOST)
+        assert [n.properties["name"] for n in batch.nodes_of(SOURCE)] == ["good"]
+
+
+class TestPackageIdentityPolicy:
+    """The key is (ecosystem, name, version): a purl namespace or an architecture is not identity."""
+
+    def test_two_namespaces_of_one_name_and_version_are_one_package_and_the_conflict_is_reported(self):
+        a = _comp("core", "1", ref="a", purl="pkg:maven/org.a/core@1")
+        b = _comp("core", "1", ref="b", purl="pkg:maven/org.b/core@1")
+        batch = parse_cyclonedx(_doc([a, b]), host_id=HOST)
+        assert len(batch.nodes_of(PACKAGE)) == 1
+        assert batch.nodes_of(PACKAGE)[0].properties["purl"] == "pkg:maven/org.a/core@1"
+        assert batch.report.duplicate_components_collapsed == 1
+        assert "maven/core/1: kept 'pkg:maven/org.a/core@1'" in batch.report.purl_conflicts[0]
+
+    def test_two_architectures_of_one_deb_are_one_package(self):
+        amd = _comp("curl", "8", ref="a", purl="pkg:deb/debian/curl@8?arch=amd64")
+        arm = _comp("curl", "8", ref="b", purl="pkg:deb/debian/curl@8?arch=arm64")
+        batch = parse_cyclonedx(_doc([arm, amd]), host_id=HOST)
+        assert len(batch.nodes_of(PACKAGE)) == 1
+        assert batch.nodes_of(PACKAGE)[0].properties["architecture"] == "amd64"

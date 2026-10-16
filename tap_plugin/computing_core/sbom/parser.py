@@ -31,8 +31,11 @@ from tap_plugin.computing_core.sbom.batch import EdgeRow, NodeRow, SbomBatch, Sb
 
 from tap_grid.natural_key import identity_lock_key
 
-#: Largest document accepted, in bytes. A document over it is refused, not truncated.
-MAX_BYTES: Final[int] = 32 * 1024 * 1024
+#: Largest document accepted, in bytes. A document over it is refused, not truncated. The tap-web
+#: SBOM, 192 components, is about 0.6 MB; 8 MiB is 13 times that, which covers an image with
+#: thousands of packages. The cap is what bounds the cost of the parse itself: ``json.loads``
+#: builds the whole tree before anything can be counted (30 MB of ``{},`` took 6 s and 1.36 GB).
+MAX_BYTES: Final[int] = 8 * 1024 * 1024
 #: Deepest JSON nesting accepted. Real CycloneDX is under 10; 64 leaves room for nested components.
 MAX_DEPTH: Final[int] = 64
 #: Most components accepted, nested ones included.
@@ -56,9 +59,35 @@ LIBRARY_COMPONENT_TYPES: Final[frozenset[str]] = frozenset({"library", "framewor
 #: model module imports Django.
 SOURCE_KINDS: Final[frozenset[str]] = frozenset({"self-built", "source-built", "copied-image"})
 
+#: The column limits of the models this parser writes, restated because the models import Django.
+#: ``tests/test_sbom_parse.py`` checks every emitted value against the models' own ``max_length``,
+#: so a drift here fails a test. A value over its limit is skipped or left empty with a report note,
+#: never emitted: the model would refuse the whole batch's row.
+LIMITS: Final[Mapping[str, int]] = {
+    "ecosystem": 32,
+    "name": 255,
+    "version": 128,
+    "purl": 1024,
+    "cpe": 512,
+    "license": 512,
+    "architecture": 32,
+    "source_url": 1024,
+    "path": 1024,
+    "os_id": 64,
+    "version_id": 64,
+    "build_id": 255,
+    "generator": 255,
+    "revision": 2_147_483_647,
+}
+
 _SERIAL = re.compile(r"^urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-_IMAGE_DIGEST = re.compile(r"^[a-z0-9]+:[0-9a-f]{32,}$")
+_IMAGE_DIGEST = re.compile(r"^[a-z0-9]{1,31}:[0-9a-f]{32,128}$")
 _ARCHITECTURE = re.compile(r"^[A-Za-z0-9_.-]+$")
+#: An RFC 3339 date-time with a zone, the shape ``sbom_document.produced_at`` accepts.
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
+#: A package or origin name as a package manager writes it. A decoded purl qualifier that is not
+#: one (``upstream=%zz``) must not become a source package's name.
+_PACKAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 PACKAGE = "computing_core__package"
 LIBRARY = "computing_core__library"
@@ -94,13 +123,22 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return seen
 
 
-def _depth(value: Any) -> int:
-    """Nesting depth of a parsed JSON value, iteratively (a recursive walk is the thing being capped)."""
+def _walk(value: Any) -> int:
+    """Nesting depth of a parsed JSON value, iteratively (a recursive walk is the thing being capped).
+
+    Also refuses a string a UTF-8 encoder cannot write (a lone surrogate from a ``\\ud800`` escape),
+    which would otherwise break every writer downstream of the parser.
+    """
     deepest = 0
     stack: list[tuple[Any, int]] = [(value, 1)]
     while stack:
         item, level = stack.pop()
+        if isinstance(item, str):
+            _require_unicode(item)
+            continue
         if isinstance(item, dict):
+            for key in item:
+                _require_unicode(key)
             children: Sequence[Any] = list(item.values())
         elif isinstance(item, list):
             children = item
@@ -109,6 +147,13 @@ def _depth(value: Any) -> int:
         deepest = max(deepest, level)
         stack.extend((child, level + 1) for child in children)
     return deepest
+
+
+def _require_unicode(text: str) -> None:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise SbomParseError("the document contains a string that is not valid Unicode (a lone surrogate)") from None
 
 
 def _load(data: bytes) -> dict[str, Any]:
@@ -120,11 +165,13 @@ def _load(data: bytes) -> dict[str, Any]:
         raise SbomParseError("the document is empty")
     try:
         document = json.loads(bytes(data), object_pairs_hook=_no_duplicate_keys, parse_constant=_reject_constant)
+    except SbomParseError:
+        raise
     except RecursionError:
         raise SbomParseError(f"the document is nested deeper than the {MAX_DEPTH}-level depth cap") from None
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, and an integer literal over 4300 digits
         raise SbomParseError(f"not JSON: {exc}") from None
-    depth = _depth(document)
+    depth = _walk(document)
     if depth > MAX_DEPTH:
         raise SbomParseError(f"the document is nested {depth} levels deep, over the {MAX_DEPTH}-level depth cap")
     if not isinstance(document, dict):
@@ -145,12 +192,16 @@ def _check_format(document: Mapping[str, Any]) -> str:
     return str(spec_version)
 
 
-def _flatten(document: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    """Every component, nested ones included, in document order, capped at ``MAX_COMPONENTS``."""
+def _flatten(document: Mapping[str, Any]) -> tuple[list[Mapping[str, Any]], int]:
+    """Every component, nested ones included, in document order, capped at ``MAX_COMPONENTS``.
+
+    Also the number of components whose ``components`` value is not a list (counted, not read).
+    """
     top = document.get("components")
     if not isinstance(top, list):
         raise SbomParseError("the document lists no components array")
     found: list[Mapping[str, Any]] = []
+    unreadable_nesting = 0
     stack: list[Any] = list(reversed(top))
     while stack:
         item = stack.pop()
@@ -162,9 +213,11 @@ def _flatten(document: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         nested = item.get("components")
         if isinstance(nested, list):
             stack.extend(reversed(nested))
+        elif nested is not None:
+            unreadable_nesting += 1
     if not found:
         raise SbomParseError("the document lists no components; an empty inventory is refused, not returned")
-    return found
+    return found, unreadable_nesting
 
 
 # --- reading a component ----------------------------------------------------------------------
@@ -174,11 +227,22 @@ def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _properties(component: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
+def _list(component: Mapping[str, Any], key: str, notes: list[str], who: str) -> list[Any]:
+    """A component's list-valued field; a value of any other shape is ignored and noted."""
+    value = component.get(key)
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    notes.append(f"{who}: {key} is not a list; ignored")
+    return []
+
+
+def _properties(component: Mapping[str, Any], notes: list[str], who: str) -> tuple[dict[str, str], list[str]]:
     """First value per property name, and the document-order list of ``syft:cpe23`` values."""
     first: dict[str, str] = {}
     cpes: list[str] = []
-    for prop in component.get("properties") or []:
+    for prop in _list(component, "properties", notes, who):
         if not isinstance(prop, dict):
             continue
         name, value = _text(prop.get("name")), prop.get("value")
@@ -190,26 +254,45 @@ def _properties(component: Mapping[str, Any]) -> tuple[dict[str, str], list[str]
     return first, cpes
 
 
-def _purl_parts(purl: str) -> tuple[str, dict[str, str]]:
-    """The purl type, and its qualifiers decoded. ``("", {})`` for something that is not a purl."""
-    if not purl.startswith("pkg:"):
-        return "", {}
+def _purl_parts(purl: str) -> tuple[str, dict[str, str], list[str]]:
+    """The purl type, its qualifiers decoded, and what was wrong with them.
+
+    The scheme is case-insensitive (RFC 3986), so ``PKG:`` is read like ``pkg:``; the purl itself is
+    stored as given. A qualifier key is lower-cased. A key that appears twice is ambiguous and is
+    ignored altogether; a value that is not valid percent-encoded UTF-8 is ignored. Both are
+    returned as problems for the report. ``("", {}, [])`` for something that is not a purl.
+    """
+    if purl[:4].lower() != "pkg:":
+        return "", {}, []
     body = purl[len("pkg:") :].split("#", 1)[0]
     head, _, query = body.partition("?")
     purl_type = head.split("/", 1)[0].lower()
     qualifiers: dict[str, str] = {}
+    repeated: set[str] = set()
+    problems: list[str] = []
     for pair in query.split("&") if query else []:
         key, sep, value = pair.partition("=")
-        if sep and key:
-            qualifiers[unquote(key)] = unquote(value)
-    return purl_type, qualifiers
+        if not sep or not key:
+            continue
+        try:
+            name, decoded = unquote(key, errors="strict").lower(), unquote(value, errors="strict")
+        except UnicodeDecodeError:
+            problems.append(f"qualifier {key!r} is not valid percent-encoded UTF-8; ignored")
+            continue
+        if name in qualifiers or name in repeated:
+            repeated.add(name)
+            qualifiers.pop(name, None)
+            continue
+        qualifiers[name] = decoded
+    problems.extend(f"qualifier {name!r} appears more than once; ignored" for name in sorted(repeated))
+    return purl_type, qualifiers, problems
 
 
-def _license(component: Mapping[str, Any]) -> str:
+def _license(component: Mapping[str, Any], notes: list[str], who: str) -> str:
     """An SPDX expression from the component's licenses; names that are not SPDX ids are left out."""
     expressions: list[str] = []
     ids: list[str] = []
-    for choice in component.get("licenses") or []:
+    for choice in _list(component, "licenses", notes, who):
         if not isinstance(choice, dict):
             continue
         if _text(choice.get("expression")):
@@ -221,6 +304,14 @@ def _license(component: Mapping[str, Any]) -> str:
         return expressions[0]
     parts = [f"({e})" if " " in e else e for e in expressions] + ids
     return " AND ".join(parts)
+
+
+def _fit(value: str, limit_name: str, who: str, notes: list[str]) -> str:
+    """``value`` if it fits its column, else empty with a note."""
+    if len(value) > LIMITS[limit_name]:
+        notes.append(f"{who}: {limit_name} is longer than {LIMITS[limit_name]} characters; left empty")
+        return ""
+    return value
 
 
 def _label(entity_type: str, key: Mapping[str, object]) -> str:
@@ -256,10 +347,12 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
 
     document = _load(data)
     spec_version = _check_format(document)
-    components = _flatten(document)
+    components, unreadable_nesting = _flatten(document)
 
     skipped_components: Counter[str] = Counter()
     notes: list[str] = []
+    if unreadable_nesting:
+        skipped_components["nested components value is not a list"] += unreadable_nesting
 
     # bom-ref is a handle inside one document: it resolves dependencies and is stored nowhere.
     refs: dict[str, Mapping[str, Any]] = {}
@@ -278,17 +371,35 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
     for component in components:
         name, version = _text(component.get("name")), _text(component.get("version"))
         purl = _text(component.get("purl"))
-        purl_type, _ = _purl_parts(purl)
+        purl_type, _, _ = _purl_parts(purl)
         ctype = _text(component.get("type"))
+        who = f"{name}@{version}"
         if not name:
             skipped_components["no name"] += 1
             continue
         if not version:
             skipped_components["no version"] += 1
             continue
+        if len(name) > LIMITS["name"]:
+            skipped_components[f"name longer than {LIMITS['name']} characters"] += 1
+            continue
+        if len(version) > LIMITS["version"]:
+            skipped_components[f"version longer than {LIMITS['version']} characters"] += 1
+            continue
+        if len(purl) > LIMITS["purl"]:
+            skipped_components[f"purl longer than {LIMITS['purl']} characters"] += 1
+            continue
+        if len(purl_type) > LIMITS["ecosystem"]:
+            skipped_components[f"purl type longer than {LIMITS['ecosystem']} characters"] += 1
+            continue
         if ctype == "operating-system":
-            props, _ = _properties(component)
+            props, _ = _properties(component, notes, who)
             key = (props.get("syft:distro:id") or name, props.get("syft:distro:versionID") or version, "")
+            if len(key[0]) > LIMITS["os_id"] or len(key[1]) > LIMITS["version_id"]:
+                skipped_components[
+                    f"operating system id longer than {LIMITS['os_id']} or version longer than {LIMITS['version_id']}"
+                ] += 1
+                continue
             systems.setdefault(key, []).append(component)
             kind_of[id(component)] = ("os", key)
         elif purl_type in PACKAGE_PURL_TYPES:
@@ -327,14 +438,16 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
     for key in sorted(packages):
         component = pick(packages[key], key)
         ecosystem, name, version = key
-        props, cpe_values = _properties(component)
+        who = "/".join(key)
+        props, cpe_values = _properties(component, notes, who)
         purl = _text(component.get("purl"))
-        _, qualifiers = _purl_parts(purl)
+        _, qualifiers, problems = _purl_parts(purl)
+        notes.extend(f"{who}: {problem}" for problem in problems)
         architecture = qualifiers.get("arch", "")
-        if architecture and not _ARCHITECTURE.match(architecture):
-            notes.append(f"{'/'.join(key)}: arch qualifier {architecture!r} is not one architecture; left empty")
+        if architecture and (not _ARCHITECTURE.match(architecture) or len(architecture) > LIMITS["architecture"]):
+            notes.append(f"{who}: arch qualifier {architecture!r} is not one architecture; left empty")
             architecture = ""
-        cpe = _text(component.get("cpe"))
+        cpe = _fit(_text(component.get("cpe")), "cpe", who, notes)
         candidates = [c for c in dict.fromkeys(cpe_values) if c != cpe and c.startswith("cpe:2.3:")]
         dropped = [c for c in dict.fromkeys(cpe_values) if c != cpe and not c.startswith("cpe:2.3:")]
         if dropped:
@@ -353,12 +466,22 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
                 "purl": purl,
                 "cpe": cpe,
                 "cpe_candidates": candidates,
-                "license": _license(component),
+                "license": _fit(_license(component, notes, who), "license", who, notes),
                 "source_document": "sbom",
             },
         )
         if ecosystem == "apk":
-            origin = _text(props.get("syft:metadata:originPackage")) or _text(qualifiers.get("upstream")) or name
+            origin = name
+            for where, stated in (
+                ("syft:metadata:originPackage", _text(props.get("syft:metadata:originPackage"))),
+                ("purl upstream qualifier", _text(qualifiers.get("upstream"))),
+            ):
+                if not stated:
+                    continue
+                if _PACKAGE_NAME.match(stated) and len(stated) <= LIMITS["name"]:
+                    origin = stated
+                    break
+                notes.append(f"{who}: {where} {stated[:60]!r} is not a package name; the next source is used")
             source_key = (ecosystem, origin, version)
             if source_key not in source_labels:
                 source_labels[source_key] = _label(
@@ -379,7 +502,8 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
     for key in sorted(libraries):
         component = pick(libraries[key], key)
         ecosystem, name, version = key
-        props, _ = _properties(component)
+        who = "/".join(key)
+        props, _ = _properties(component, notes, who)
         label = _label(LIBRARY, {"ecosystem": ecosystem, "name": name, "version": version})
         source_kind = props.get("tap:source_kind")
         properties: dict[str, Any] = {
@@ -387,11 +511,11 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
             "name": name,
             "version": version,
             "purl": _text(component.get("purl")),
-            "cpe": _text(component.get("cpe")),
-            "license": _license(component),
+            "cpe": _fit(_text(component.get("cpe")), "cpe", who, notes),
+            "license": _fit(_license(component, notes, who), "license", who, notes),
             "source_kind": source_kind if source_kind in SOURCE_KINDS else None,
-            "source_url": props.get("tap:source", ""),
-            "path": props.get("tap:path", ""),
+            "source_url": _fit(props.get("tap:source", ""), "source_url", who, notes),
+            "path": _fit(props.get("tap:path", ""), "path", who, notes),
         }
         nodes[label] = NodeRow(ref=label, entity_type=LIBRARY, name=name, properties=properties)
 
@@ -400,10 +524,15 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
     for key in sorted(systems):
         component = pick(systems[key], key)
         os_id, version_id, build_id = key
-        props, _ = _properties(component)
+        props, _ = _properties(component, notes, "/".join(key))
         label = _label(OPERATING_SYSTEM, {"os_id": os_id, "version_id": version_id, "build_id": build_id})
         system_labels.append(label)
         display = props.get("syft:distro:prettyName") or _text(component.get("name"))
+        if len(display) > LIMITS["name"]:
+            notes.append(
+                f"{'/'.join(key)}: operating system name is longer than {LIMITS['name']} characters; os_id used"
+            )
+            display = os_id
         nodes[label] = NodeRow(
             ref=label,
             entity_type=OPERATING_SYSTEM,
@@ -425,13 +554,23 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
     revision = document.get("version")
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
         revision = 1
+    elif revision > LIMITS["revision"]:
+        notes.append(f"document version {revision} is over {LIMITS['revision']}; revision 1 used")
+        revision = 1
     produced = _text(metadata.get("timestamp"))
+    if produced and not _TIMESTAMP.match(produced):
+        notes.append(f"metadata.timestamp {produced[:40]!r} is not an RFC 3339 date-time with a zone; left out")
+        produced = ""
     if produced:
         try:
             datetime.fromisoformat(produced)
         except ValueError:
-            notes.append(f"metadata.timestamp {produced!r} is not an ISO 8601 time; left out")
+            notes.append(f"metadata.timestamp {produced!r} is not a real date-time; left out")
             produced = ""
+    generator = _generator(metadata)
+    if len(generator) > LIMITS["generator"]:
+        notes.append(f"generator is longer than {LIMITS['generator']} characters; left empty")
+        generator = ""
     document_label = _label(SBOM_DOCUMENT, {"content_digest": digest})
     nodes[document_label] = NodeRow(
         ref=document_label,
@@ -445,7 +584,7 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
             "revision": revision,
             "subject_digest": subject_digest,
             "produced_at": produced or None,
-            "generator": _generator(metadata),
+            "generator": generator,
             "component_count": len(components),
         },
     )
@@ -466,13 +605,19 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
     skipped_dependencies: Counter[str] = Counter()
     duplicate_dependencies = 0
     listed = 0
-    for entry in document.get("dependencies") or []:
+    all_dependencies = document.get("dependencies")
+    if all_dependencies is not None and not isinstance(all_dependencies, list):
+        skipped_dependencies["dependencies is not a list"] += 1
+        all_dependencies = []
+    for entry in all_dependencies or []:
         if not isinstance(entry, dict):
             skipped_dependencies["entry is not an object"] += 1
             continue
         depender_ref = entry.get("ref")
         depender = refs.get(depender_ref) if isinstance(depender_ref, str) else None
-        targets = entry.get("dependsOn") or []
+        targets = entry.get("dependsOn")
+        if targets is None:
+            continue
         if not isinstance(targets, list):
             skipped_dependencies["dependsOn is not a list"] += 1
             continue
@@ -513,7 +658,7 @@ def parse_cyclonedx(data: bytes, *, host_id: str) -> SbomBatch:
         duplicate_components_collapsed=duplicates,
         duplicate_dependencies_collapsed=duplicate_dependencies,
         purl_conflicts=tuple(sorted(purl_conflicts)),
-        notes=tuple(sorted(notes)),
+        notes=tuple(sorted(set(notes))),
     )
     ordered_nodes = tuple(sorted(nodes.values(), key=lambda n: (n.entity_type, n.ref)))
     ordered_edges = tuple(sorted(edges.values(), key=lambda e: (e.edge_type, e.ref)))
