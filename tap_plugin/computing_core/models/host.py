@@ -68,12 +68,24 @@ class Host(BaseModel):
             "nodes": [{"type": "computing_core__operating_system"}],
             "edges": [{"type": "RUNS_OPERATING_SYSTEM__computing_core"}],
         },
+        # A host may send an application flow. The flow edges declare no endpoints, and core registers
+        # an edge that declares neither end as no constraint at all, so a type that declares its
+        # edges (this one) must name them itself or the grid refuses them.
+        {
+            "nodes": [{"type": "computing_core__application_flow"}],
+            "edges": [{"type": "APPLICATION_FLOW_SOURCE__computing_core"}],
+        },
     ]
     # An SBOM document inventories the host; the document is a reference, never containment.
     INBOUND_EDGES: ClassVar[list[dict[str, Any]]] = [
         {
             "nodes": [{"type": "computing_core__sbom_document"}],
             "edges": [{"type": "DESCRIBES_HOST__computing_core"}],
+        },
+        # ... and may receive one, for the same reason.
+        {
+            "nodes": [{"type": "computing_core__application_flow"}],
+            "edges": [{"type": "APPLICATION_FLOW_DESTINATION__computing_core"}],
         },
     ]
     CONTAINMENT_EDGES: ClassVar[tuple[str, ...]] = (

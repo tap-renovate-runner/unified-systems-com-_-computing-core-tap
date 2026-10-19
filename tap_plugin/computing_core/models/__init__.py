@@ -1,5 +1,6 @@
 """Computing Core plugin models package."""
 
+from tap_plugin.computing_core.models.application_flow import ApplicationFlow
 from tap_plugin.computing_core.models.crypto_provider import CryptoProvider
 from tap_plugin.computing_core.models.file import File
 from tap_plugin.computing_core.models.host import Host
@@ -21,6 +22,7 @@ from tap_plugin.computing_core.models.web_document import WebDocument
 from tap_plugin.computing_core.models.web_host import WebHost
 
 __all__ = [
+    "ApplicationFlow",
     "CryptoProvider",
     "File",
     "Host",

@@ -1,0 +1,11 @@
+{
+  "slug": "APPLICATION_FLOW_DESTINATION__computing_core",
+  "name": "Application Flow Destination",
+  "description": "The receiver of this application flow. Points from the application_flow node to the receiving node. The name is George's and deliberately NOT the <ACTION>_<OBJECT> form: the edge says what role the destination plays in the flow, not an action it takes. Both ends are open (no sources or targets declared), so the flow end is not enforced by the edge definition: what may send or receive is not enumerable, and the flow node is the other end by convention. A reference, not containment: see req-computing-core-application-flow-6 for the proposed delete rule.",
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "network"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "slug": "RUNS_IMAGE__computing_core",
+  "name": "Runs Image",
+  "description": "This node runs this image. The source is open (an aws_core container is the first case; what runs an image is not enumerable). The target is a computing_core host of kind container: the image host, which stands for the image the container was started from. A reference, not containment: no cascade follows it.",
+  "targets": [
+    "computing_core__host"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}

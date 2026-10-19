@@ -31,6 +31,7 @@ Networking is an especially important part of this layer. v0 should model the st
 | req-computing-core-ports | [Port Modeling](#port-modeling) | Proposed | Ports are first-class nodes with simple v0 state semantics |
 | req-computing-core-interface | [Network Interface Modeling](#network-interface-modeling) | Proposed | `network_interface` MAC uses `null` for unobserved/not-applicable (partial-observation convention) |
 | req-computing-core-tcp | [TCP Connection Modeling](#tcp-connection-modeling) | Proposed | TCP connections are modeled as nodes rather than edges |
+| req-computing-core-application-flow | [Application Flow Modeling](#application-flow-modeling) | Implemented | `application_flow`: name and description only, keyless; `APPLICATION_FLOW_SOURCE` and `APPLICATION_FLOW_DESTINATION` (names deliberately not `<ACTION>_<OBJECT>`), open at both ends; the delete-with-its-ends rule is proposed, not built |
 | req-computing-core-host | [Host Modeling](#host-modeling) | Implemented | One `host` type for every OS-bearing environment; physical-versus-virtual is `kind`; keyed `(realm, stable_id)` |
 | req-computing-core-os-accounts | [OS Accounts And Groups](#os-accounts-and-groups) | Implemented | `os_user` / `os_group` live in one host's account database, keyed to it; `user` retired |
 | req-computing-core-package | [Package Modeling](#package-modeling) | Implemented | `package`: one release of an apk/deb/rpm/pypi/npm package, keyed `(ecosystem, name, version)` |
@@ -39,6 +40,7 @@ Networking is an especially important part of this layer. v0 should model the st
 | req-computing-core-operating-system | [Operating System Modeling](#operating-system-modeling) | Implemented | `operating_system`: keyed `(os_id, version_id, build_id)` so a rolling distro's placeholder VERSION_ID does not merge builds |
 | req-computing-core-crypto-provider | [Crypto Provider Modeling](#crypto-provider-modeling) | Implemented | `crypto_provider`: a cryptographic implementation found in an artifact and its FIPS-boundary disposition; no key material |
 | req-computing-core-inventory-edges | [Software Inventory Edges](#software-inventory-edges) | Implemented | `INSTALLS_PACKAGE`, `DERIVES_FROM_SOURCE_PACKAGE`, `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM`, `CARRIES_CRYPTO_PROVIDER`; all references |
+| req-computing-core-runtime-edges | [Runtime Edges](#runtime-edges) | Implemented | `RUNS_PROGRAM` (any node runs a program) and `RUNS_IMAGE` (any node runs a container-kind host, the image host); open source, references |
 | req-computing-core-package-dependency | [Package Dependencies](#package-dependencies) | Implemented | `REQUIRES_PACKAGE`: the dependency links an SBOM lists between packages; a reference, no properties |
 | req-computing-core-sbom-document | [SBOM Document](#sbom-document) | Implemented | `sbom_document`: the record that one SBOM existed (content digest, revision lineage, signer), never its body; `DESCRIBES_HOST` |
 | req-computing-core-sbom-parse | [SBOM Parser](#sbom-parser) | Implemented | A pure, Django-free CycloneDX 1.4-1.7 parser: bytes in, a typed batch of packages, libraries, source packages, the operating system and edges out; fails closed |
@@ -185,7 +187,7 @@ The initial v0 model set is:
 | Runtime | `operating_system`, `program`, `process`; built since 2026-10-14: `operating_system`, `package`, `library`, `crypto_provider`; since 2026-10-15 `source_package` | Operating context plus executable/runtime units, and the software inventory of a host: see [Package](#package-modeling), [Source Package](#source-package-modeling), [Library](#library-modeling), [Operating System](#operating-system-modeling), [Crypto Provider](#crypto-provider-modeling) |
 | Storage | `storage_volume`, `filesystem`, `file` | Generic storage abstraction plus mounted and contained data |
 | Networking | `network_interface`, `ip_address`, `ip_subnet`, `port` | Stable IP-stack primitives |
-| Transport/Protocol | `tcp_connection`, `application_protocol` | Session node plus protocol abstraction above layer four |
+| Transport/Protocol | `tcp_connection`, `application_protocol`; built since 2026-10-19: `application_flow` | Session node plus protocol abstraction above layer four, and the aggregate of traffic between a source and a destination: see [Application Flow](#application-flow-modeling) |
 | Identity | `os_user`, `os_group` | Accounts and groups defined in one host's account database. A person is `identity_core__human`, not a computing_core type; `user` was retired 2026-10-08 |
 | Web (web-native) | `web_host`, `web_document` | Internet hosts and URL-addressed documents; carry the `tap.web` marker (see below) |
 
@@ -208,6 +210,7 @@ Definitions and intent:
 - **ip_subnet**: a generic IPv4 or IPv6 subnet or prefix
 - **port**: a transport endpoint identified primarily by port number and transport family
 - **tcp_connection**: a TCP session represented as a node
+- **application_flow**: a conceptual aggregate of traffic between a source and a destination, a node the sender and receiver hang from by two edges ([Application Flow](#application-flow-modeling))
 - **application_protocol**: a generic protocol concept that rides above transport and can later branch into specific protocols
 - **host**: a computing environment that runs an operating system and executes programs (workstation, server, VM, container, CI runner, cloud dev environment); see [Host Modeling](#host-modeling)
 - **os_user**: an account in one host's own account database (`/etc/passwd`, a Windows local account); not a person. See [OS Accounts And Groups](#os-accounts-and-groups)
@@ -343,6 +346,46 @@ The v0 TCP connection state vocabulary should align with the classic RFC 793 lif
 #### Future
 
 Consider a future `udp_flow` model if real use cases emerge, and consider whether any later `ip_flow` concept should share that modeling direction. Deeper packet-hop or path modeling is intentionally deferred until TAP has a concrete need and a stable semantics for representing network hops.
+
+### Application Flow Modeling
+----
+RID: `req-computing-core-application-flow`
+
+Status: `Implemented`
+
+An application flow is a node, `computing_core__application_flow`, with two edges: the sender points at it and it points at the receiver.
+
+#### Implementation
+
+The model has two fields, `name` and `description`, both strings and neither required. It is not a `tcp_connection`: a connection is a transport session some source system observes between two ports, and a flow is the aggregate a person names above it ("customers reach tap-web"), however many connections carry it.
+
+**Keyless, on purpose.** The model declares `NATURAL_KEY = KEYLESS` with this reason, approved by George 2026-10-19 and kept verbatim: *An application flow is a conceptual aggregate of traffic between a source and a destination; no source system observes it, so it has no stable identifier to key on yet. A natural key will be declared when one is found.* A keyless type is not found again by its properties, so a writer that must re-find a flow carries its own stable entity id (seed data does); a second create is a second node, never a merge.
+
+Two edges join it to its ends, both with the plain identity, no properties, `tap.computing: network`, and both references, not containment (no model lists either in `CONTAINMENT_EDGES`):
+
+| edge | sentence |
+| --- | --- |
+| `APPLICATION_FLOW_SOURCE__computing_core` | `<sender> APPLICATION_FLOW_SOURCE <application_flow>` |
+| `APPLICATION_FLOW_DESTINATION__computing_core` | `<application_flow> APPLICATION_FLOW_DESTINATION <receiver>` |
+
+**The names break the `<ACTION>_<OBJECT>` form on purpose.** They are George's, they name the role an end plays in the flow rather than an action it takes, and the edge descriptions say so. They are not a precedent for other edges.
+
+**Both ends of both edges are open.** Neither edge declares `sources` or `targets`: the sender and receiver are any node (a computer, a program, an aws_core resource), which is not enumerable, so the edge definition constrains nothing and `application_flow` as the other end is a convention the tests hold, not a check the grid makes.
+
+**What "open" means in the grid today.** Core registers an edge's endpoint constraints only when it declares `sources` or `targets`; an edge that declares neither is registered as no constraint, grants nothing, and is permitted only between node types that do not declare their own edges. A type that does declare them closes its side, so `host` names both flow edges in its `OUTBOUND_EDGES` and `INBOUND_EDGES` (to and from `application_flow` only), and another plugin's type that declares its edges must do the same to send or receive a flow. A type that declares no edges (`program`, `tcp_connection`, and `aws_core__aws_ecs_container`, which declares none) needs nothing and must not be given declarations only to carry these edges: declaring them would close the type to every edge it does not list. Checked against `aws_core` v0.8.0 on 2026-10-19: task `RUNS_CONTAINER` container, container `RUNS_PROGRAM` program, program `RUNS_PROGRAM` program, container `RUNS_IMAGE` host, host `APPLICATION_FLOW_SOURCE` flow and flow `APPLICATION_FLOW_DESTINATION` program, and a container as flow sender, all pass the grid's edge validation.
+
+**Delete rule, proposed and not built.** An application flow does not exist without its source and destination, so it should be deleted with either. The mechanism is deferred: this change builds no cascade, no hook and no change to `tap_grid`, and the edges are references until the mechanism is decided.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-application-flow-1 | Name And Description Only | Implemented | `application_flow` has the fields `name` and `description` and no other domain field; both are optional strings. | `tests/test_application_flow.py::TestApplicationFlow::test_it_holds_a_name_and_a_description_and_nothing_else` |
+| req-computing-core-application-flow-2 | Keyless With George's Reason | Implemented | The type declares `NATURAL_KEY = KEYLESS` and the reason text of this section, verbatim; two creates with the same name are two nodes. | `::test_it_is_keyless_with_the_approved_reason`, `::test_two_flows_of_one_name_are_two_nodes` |
+| req-computing-core-application-flow-3 | Source And Destination Edges | Implemented | `APPLICATION_FLOW_SOURCE__computing_core` joins a sender to a flow and `APPLICATION_FLOW_DESTINATION__computing_core` joins a flow to a receiver; neither declares `sources` or `targets`, so any node type is accepted at the open end; both carry the plain identity, no properties and `tap.computing: network`. | `::TestEdges::test_a_flow_joins_any_sender_to_any_receiver`, `::test_a_program_may_send_and_receive_a_flow_too`, `::test_the_flow_edges_are_open_at_both_ends_plain_and_not_containment` |
+| req-computing-core-application-flow-4 | Icon And Display | Implemented | The type has `ENTITY_ICON = "application-flow"`, an 80x80 SVG shipped in the plugin, and a default `tap_viz` display. | `::TestApplicationFlow::test_it_has_an_icon_file_and_a_display` |
+| req-computing-core-application-flow-5 | Registered In The Manifest | Implemented | The manifest registers the model and the two edges, and each edge slug equals its file name. | `::test_the_manifest_registers_the_type_and_the_flow_edges` |
+| req-computing-core-application-flow-6 | Flow Deleted With Its Ends | Proposed | An application flow does not exist without its source and destination, so it is deleted with either. The mechanism is deferred: no cascade, hook or `tap_grid` change is built, and until it is, retiring a sender or receiver leaves the flow. | George's principle, 2026-10-19. Not built, and no issue is filed: the mechanism is the open question. |
 
 ### Host Modeling
 ----
@@ -641,6 +684,31 @@ Six edges connect the inventory types to `host`, `program` and each other. Each 
 
 There is no operating-system-to-package edge: which packages an OS comprises is the packages its hosts install, and a second statement of that would be two copies. There is no container-image type here; a container is a `host` with `kind: container`.
 
+### Runtime Edges
+----
+RID: `req-computing-core-runtime-edges`
+
+Status: `Implemented`
+
+Two edges say what a node runs. Both are references, not containment (no model lists either in `CONTAINMENT_EDGES`, no cascade follows them), declare the plain identity and no properties, and carry `tap.computing: runtime`. Both have an open source, because what runs a program or an image is not enumerable and the first source of `RUNS_IMAGE` is an `aws_core` container, which this plugin must not name.
+
+#### Implementation
+
+| edge | sentence | justification |
+| --- | --- | --- |
+| `RUNS_PROGRAM__computing_core` | `<any node> RUNS_PROGRAM <program>` | one verb for both uses: a container runs gunicorn, and gunicorn runs tap-web. Target `computing_core__program` |
+| `RUNS_IMAGE__computing_core` | `<any node> RUNS_IMAGE <host>` | a container runs the image it was started from. The target is a `computing_core__host` of kind container, the image host (see above: there is no image type). Target `computing_core__host` |
+
+The verb is `RUNS_*`, as in `RUNS_OPERATING_SYSTEM` here and `RUNS_SERVICE`, `RUNS_TASK` and `RUNS_CONTAINER` in `aws_core`, so a path from a service down to a program reads in one verb. It stands in for the candidate `EXECUTES` in the table under [Edge Types](#edge-types).
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-runtime-edges-1 | Program And Image Sentences Connect | Implemented | `RUNS_PROGRAM` connects any node to a `program` and `RUNS_IMAGE` any node to a `host`, each carrying `tap.computing: runtime`; a program may run a program, so a container-to-gunicorn and a gunicorn-to-tap-web edge are the same type. | `tests/test_application_flow.py::TestEdges::test_runs_program_and_runs_image_connect` |
+| req-computing-core-runtime-edges-2 | Target Type Is Enforced Where Declared | Implemented | `RUNS_PROGRAM` to a `host` is refused. The edge definition's `targets` is a grant, not a restriction, so a target type that declares no edges (`program`, `tcp_connection`) stays open at its end, exactly as in `req-computing-core-inventory-edges-2`. | `::TestEdges::test_runs_program_to_a_host_is_refused` |
+| req-computing-core-runtime-edges-3 | References, Open Source, Plain Identity | Implemented | Both edges omit `sources`, declare the plain identity and no properties, carry `tap.computing: runtime`, and retiring the source with `cascade="contained"` leaves the target. | `::TestEdges::test_runs_edges_are_open_at_the_source_plain_and_not_containment` |
+
 #### Acceptance Criteria
 
 | ACID | Title | Status | Description | Notes |
@@ -898,7 +966,9 @@ The plugin favors a small but expressive edge family over generic catch-all edge
 > and since 2026-10-08 `DEFINES_OS_USER`, `DEFINES_OS_GROUP` and `MEMBER_OF_GROUP`
 > ([OS Accounts And Groups](#os-accounts-and-groups)), and since 2026-10-14 `INSTALLS_PACKAGE`,
 > `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM`, `CARRIES_CRYPTO_PROVIDER` and (since 2026-10-15) `DERIVES_FROM_SOURCE_PACKAGE`
-> ([Software Inventory Edges](#software-inventory-edges)).
+> ([Software Inventory Edges](#software-inventory-edges)), and since 2026-10-19 `RUNS_PROGRAM` and `RUNS_IMAGE`
+> ([Runtime Edges](#runtime-edges)) and `APPLICATION_FLOW_SOURCE` and `APPLICATION_FLOW_DESTINATION`
+> ([Application Flow](#application-flow-modeling)).
 > The candidates below return — correctly named per the add-edge skill — when a collector
 > actually emits them.
 >
@@ -925,7 +995,7 @@ Representative relationship categories for v0 include:
 | Category | Candidate Edge Types | Description |
 | --- | --- | --- |
 | Structural | `HOSTS`, `RUNS_ON`, `CONTAINS`, `MOUNTS`, `BACKS`, `ATTACHED_TO` | Containment, hosting, and attachment relationships |
-| Runtime | `EXECUTES`, `SPAWNS`, `LISTENS_ON`, `CONNECTS_TO` | Runtime execution and endpoint/session relationships |
+| Runtime | `RUNS_PROGRAM` and `RUNS_IMAGE` (built 2026-10-19), `SPAWNS`, `LISTENS_ON`, `CONNECTS_TO` | Runtime execution and endpoint/session relationships |
 | Networking | `HAS_IP`, `AVAILABLE_AT`, `BELONGS_TO_SUBNET`, `ROUTES_VIA` | Interface and address relationships, including scanner-visible observations |
 | Protocol | `USES_PROTOCOL`, `RELIES_ON_CONNECTION` | Protocol attachment and dependency |
 

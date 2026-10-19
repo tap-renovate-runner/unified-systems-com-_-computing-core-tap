@@ -1,0 +1,14 @@
+{
+  "slug": "RUNS_PROGRAM__computing_core",
+  "name": "Runs Program",
+  "description": "This node runs this program. One verb for both uses: a container runs gunicorn, and gunicorn runs the tap-web application. The source is open because what runs a program is not enumerable (an aws_core container, another program, a host); the target is always a computing_core program. A reference, not containment: no cascade follows it.",
+  "targets": [
+    "computing_core__program"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}
