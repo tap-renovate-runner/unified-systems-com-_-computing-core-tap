@@ -34,8 +34,8 @@ class ApplicationFlow(BaseModel):
     )
     DEFAULT_DISPLAY: ClassVar[dict[str, Any]] = {
         "tap_viz": {
-            "shape": "rectangle",
-            "colors": {"fill": "#B28E5E", "border": "#835C2B", "label": "#FFFFFF"},
+            "shape": "ellipse",
+            "colors": {"fill": "#0B3D91", "border": "#0B3D91", "label": "#0B3D91"},
         }
     }
 

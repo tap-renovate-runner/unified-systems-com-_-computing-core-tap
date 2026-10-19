@@ -69,7 +69,12 @@ class TestApplicationFlow:
         model = get_model_class(TYPE)
         svg = (PLUGIN / "static" / "computing_core" / "icons" / f"{model.ENTITY_ICON}.svg").read_text()
         assert 'viewBox="0 0 80 80"' in svg
-        assert model.DEFAULT_DISPLAY["tap_viz"]["shape"]
+        display = model.DEFAULT_DISPLAY["tap_viz"]
+        assert display["shape"] == "ellipse"
+        assert display["colors"] == {"fill": "#0B3D91", "border": "#0B3D91", "label": "#0B3D91"}
+        # The icon is the circle: one solid disc filling the viewBox, nothing drawn outside it.
+        assert '<circle cx="40" cy="40" r="40" fill="#0B3D91"/>' in svg
+        assert "<rect" not in svg
 
     def test_the_manifest_registers_the_type_and_the_flow_edges(self):
         manifest = tomllib.loads((PLUGIN / "tap-plugin.toml").read_text())
