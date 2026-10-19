@@ -23,6 +23,7 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import unquote
@@ -338,7 +339,80 @@ def _canonical(component: Mapping[str, Any]) -> str:
     return json.dumps(component, sort_keys=True, separators=(",", ":"))
 
 
+@dataclass(frozen=True)
+class ComponentClass:
+    """What one CycloneDX component becomes: its kind and natural key, or why it becomes nothing."""
+
+    kind: str
+    """``package``, ``library`` or ``os``; empty when the component is skipped."""
+    key: tuple[str, str, str] = ("", "", "")
+    """The natural-key values: (ecosystem, name, version) for a package or library, (os_id, version_id, build_id)
+    for an operating system."""
+    skip: str = ""
+    """Why the component becomes no node (the key of ``SbomReport.skipped_components``); empty when it does."""
+
+
+def classify_component(component: Mapping[str, Any], notes: list[str]) -> ComponentClass:
+    """The one rule that says which grid node a component is, shared by every reader of a document.
+
+    ``parse_cyclonedx`` builds nodes from it and ``parse_cyclonedx_vulnerabilities`` names the node a
+    vulnerability affects with it, so the two can never disagree about identity
+    (req-computing-core-sbom-vulns-4). Pure; ``notes`` collects values it had to ignore.
+    """
+    name, version = _text(component.get("name")), _text(component.get("version"))
+    purl = _text(component.get("purl"))
+    purl_type, _, _ = _purl_parts(purl)
+    ctype = _text(component.get("type"))
+    who = f"{name}@{version}"
+    if not name:
+        return ComponentClass("", skip="no name")
+    if not version:
+        return ComponentClass("", skip="no version")
+    if len(name) > LIMITS["name"]:
+        return ComponentClass("", skip=f"name longer than {LIMITS['name']} characters")
+    if len(version) > LIMITS["version"]:
+        return ComponentClass("", skip=f"version longer than {LIMITS['version']} characters")
+    if len(purl) > LIMITS["purl"]:
+        return ComponentClass("", skip=f"purl longer than {LIMITS['purl']} characters")
+    if len(purl_type) > LIMITS["ecosystem"]:
+        return ComponentClass("", skip=f"purl type longer than {LIMITS['ecosystem']} characters")
+    if ctype == "operating-system":
+        props, _ = _properties(component, notes, who)
+        key = (props.get("syft:distro:id") or name, props.get("syft:distro:versionID") or version, "")
+        if len(key[0]) > LIMITS["os_id"] or len(key[1]) > LIMITS["version_id"]:
+            return ComponentClass(
+                "",
+                skip=f"operating system id longer than {LIMITS['os_id']} or version longer than {LIMITS['version_id']}",
+            )
+        return ComponentClass("os", key)
+    if purl_type in PACKAGE_PURL_TYPES:
+        return ComponentClass("package", (purl_type, name, version))
+    if purl_type in LIBRARY_PURL_TYPES or (not purl and ctype in LIBRARY_COMPONENT_TYPES):
+        return ComponentClass("library", (purl_type or "generic", name, version))
+    if purl:
+        return ComponentClass("", skip=f"unsupported purl type {purl_type or purl!r}")
+    return ComponentClass("", skip=f"no purl and CycloneDX type {ctype!r} is not software")
+
+
 # --- the parser -------------------------------------------------------------------------------
+
+
+def require_verified(verification: Verification) -> None:
+    """Refuse, before a byte of a document is read, anything but a ``verified`` outcome.
+
+    The one gate every reader of a document passes (``req-computing-core-sbom-parse-10``,
+    ``req-computing-core-sbom-vulns-2``): a non-``Verification`` or a ``refused`` / ``not-observable`` outcome
+    is a ``ValueError``.
+    """
+    from tap_plugin.computing_core.sbom.verification import VERIFIED
+    from tap_plugin.computing_core.sbom.verification import Verification as _Verification
+
+    if not isinstance(verification, _Verification):
+        raise ValueError("verification must be a Verification; an unverified document is not parsed")
+    if verification.outcome != VERIFIED:
+        raise ValueError(
+            f"a document whose verification is {verification.outcome!r} is not parsed; use record_document"
+        )
 
 
 def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification) -> SbomBatch:
@@ -353,15 +427,7 @@ def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification) ->
     sets ``verified`` and ``signer`` on the document row.
     Raises ``SbomParseError`` for anything unreadable; never returns an empty batch.
     """
-    from tap_plugin.computing_core.sbom.verification import VERIFIED
-    from tap_plugin.computing_core.sbom.verification import Verification as _Verification
-
-    if not isinstance(verification, _Verification):
-        raise ValueError("verification must be a Verification; an unverified document is not parsed")
-    if verification.outcome != VERIFIED:
-        raise ValueError(
-            f"a document whose verification is {verification.outcome!r} is not parsed; use record_document"
-        )
+    require_verified(verification)
     try:
         host = str(uuid.UUID(str(host_id)))
     except ValueError, AttributeError, TypeError:
@@ -391,51 +457,18 @@ def parse_cyclonedx(data: bytes, *, host_id: str, verification: Verification) ->
     kind_of: dict[int, tuple[str, tuple[str, str, str]]] = {}
 
     for component in components:
-        name, version = _text(component.get("name")), _text(component.get("version"))
-        purl = _text(component.get("purl"))
-        purl_type, _, _ = _purl_parts(purl)
-        ctype = _text(component.get("type"))
-        who = f"{name}@{version}"
-        if not name:
-            skipped_components["no name"] += 1
-            continue
-        if not version:
-            skipped_components["no version"] += 1
-            continue
-        if len(name) > LIMITS["name"]:
-            skipped_components[f"name longer than {LIMITS['name']} characters"] += 1
-            continue
-        if len(version) > LIMITS["version"]:
-            skipped_components[f"version longer than {LIMITS['version']} characters"] += 1
-            continue
-        if len(purl) > LIMITS["purl"]:
-            skipped_components[f"purl longer than {LIMITS['purl']} characters"] += 1
-            continue
-        if len(purl_type) > LIMITS["ecosystem"]:
-            skipped_components[f"purl type longer than {LIMITS['ecosystem']} characters"] += 1
-            continue
-        if ctype == "operating-system":
-            props, _ = _properties(component, notes, who)
-            key = (props.get("syft:distro:id") or name, props.get("syft:distro:versionID") or version, "")
-            if len(key[0]) > LIMITS["os_id"] or len(key[1]) > LIMITS["version_id"]:
-                skipped_components[
-                    f"operating system id longer than {LIMITS['os_id']} or version longer than {LIMITS['version_id']}"
-                ] += 1
-                continue
-            systems.setdefault(key, []).append(component)
-            kind_of[id(component)] = ("os", key)
-        elif purl_type in PACKAGE_PURL_TYPES:
-            key = (purl_type, name, version)
-            packages.setdefault(key, []).append(component)
-            kind_of[id(component)] = ("package", key)
-        elif purl_type in LIBRARY_PURL_TYPES or (not purl and ctype in LIBRARY_COMPONENT_TYPES):
-            key = (purl_type or "generic", name, version)
-            libraries.setdefault(key, []).append(component)
-            kind_of[id(component)] = ("library", key)
-        elif purl:
-            skipped_components[f"unsupported purl type {purl_type or purl!r}"] += 1
+        classified = classify_component(component, notes)
+        if classified.skip:
+            skipped_components[classified.skip] += 1
+        elif classified.kind == "os":
+            systems.setdefault(classified.key, []).append(component)
+            kind_of[id(component)] = ("os", classified.key)
+        elif classified.kind == "package":
+            packages.setdefault(classified.key, []).append(component)
+            kind_of[id(component)] = ("package", classified.key)
         else:
-            skipped_components[f"no purl and CycloneDX type {ctype!r} is not software"] += 1
+            libraries.setdefault(classified.key, []).append(component)
+            kind_of[id(component)] = ("library", classified.key)
 
     nodes: dict[str, NodeRow] = {}
     edges: dict[str, EdgeRow] = {}

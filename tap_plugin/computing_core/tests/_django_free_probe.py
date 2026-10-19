@@ -53,3 +53,22 @@ def parse_with_django_blocked(corpus: str, host_id: str) -> tuple[int, int, list
         builtins.open, io.open, socket.socket, time.time, time.monotonic, time.time_ns = originals  # type: ignore[assignment]
     loaded = [m for m in sys.modules if m == "django" or m.startswith("django.")]
     return len(batch.nodes), len(batch.edges), loaded
+
+
+def read_vulnerabilities_with_django_blocked(corpus: str) -> tuple[int, int, list[str]]:
+    """Import and run the vulnerability reader with Django blocked and files, sockets and the clock refused.
+
+    Returns the vulnerability count, the match count and any Django modules found loaded afterwards.
+    """
+    sys.meta_path.insert(0, _BlockDjango())
+    from tap_plugin.computing_core.sbom import Verification, parse_cyclonedx_vulnerabilities
+
+    data = Path(corpus).read_bytes()
+    originals = (builtins.open, io.open, socket.socket, time.time, time.monotonic, time.time_ns)
+    builtins.open = io.open = socket.socket = time.time = time.monotonic = time.time_ns = _refuse  # type: ignore[assignment]
+    try:
+        batch = parse_cyclonedx_vulnerabilities(data, verification=Verification("verified", signer="ci"))
+    finally:
+        builtins.open, io.open, socket.socket, time.time, time.monotonic, time.time_ns = originals  # type: ignore[assignment]
+    loaded = [m for m in sys.modules if m == "django" or m.startswith("django.")]
+    return len(batch.vulnerabilities), len(batch.matches), loaded
