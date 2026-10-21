@@ -77,6 +77,7 @@ class Package(BaseModel):
     INBOUND_EDGES: ClassVar[list[dict[str, Any]]] = [
         {"nodes": [{"type": "computing_core__host"}], "edges": [{"type": "INSTALLS_PACKAGE__computing_core"}]},
         {"nodes": [{"type": "computing_core__package"}], "edges": [{"type": "REQUIRES_PACKAGE__computing_core"}]},
+        {"nodes": [{"type": "computing_core__program"}], "edges": [{"type": "RUNS_PACKAGE__computing_core"}]},
     ]
 
     FIELD_CRUD_SCHEMA: ClassVar[dict[str, Any]] = {
