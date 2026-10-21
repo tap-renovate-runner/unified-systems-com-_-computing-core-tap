@@ -1,0 +1,17 @@
+{
+  "slug": "RUNS_PACKAGE__computing_core",
+  "name": "Runs Package",
+  "description": "This program is this package: the root of the program's dependency closure, the package whose code is the program itself. The packages the program consumes are everything reachable from the root along REQUIRES_PACKAGE, so one edge reaches the whole closure and no edge is drawn to a package that is only reachable through another. A program may have more than one root and a package may be the root of more than one program. A reference, not containment: a package outlives the program that names it. The SBOM does not say which package is the program, so the parser draws none; whoever knows the pairing (a seed, a collector, a person) draws it.",
+  "sources": [
+    "computing_core__program"
+  ],
+  "targets": [
+    "computing_core__package"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}

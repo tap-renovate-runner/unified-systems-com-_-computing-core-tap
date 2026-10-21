@@ -1,0 +1,19 @@
+{
+  "slug": "USES_KEY__computing_core",
+  "name": "Uses Key",
+  "description": "This program uses this key material or file at run time: a server's TLS private key and certificate, a signing key. The target is a private key, a public key or a file (a certificate or key held as a file). Says the program uses it, not that it produced it (GENERATES_FILE) and not that it is part of a package. A reference, not containment: a key outlives the program that reads it. Carries no key material.",
+  "sources": [
+    "computing_core__program"
+  ],
+  "targets": [
+    "computing_core__private_key",
+    "computing_core__public_key",
+    "computing_core__file"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}
