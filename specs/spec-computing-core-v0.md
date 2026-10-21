@@ -42,6 +42,8 @@ Networking is an especially important part of this layer. v0 should model the st
 | req-computing-core-inventory-edges | [Software Inventory Edges](#software-inventory-edges) | Implemented | `INSTALLS_PACKAGE`, `DERIVES_FROM_SOURCE_PACKAGE`, `SHIPS_LIBRARY`, `LOADS_LIBRARY`, `RUNS_OPERATING_SYSTEM`, `CARRIES_CRYPTO_PROVIDER`; all references |
 | req-computing-core-runtime-edges | [Runtime Edges](#runtime-edges) | Implemented | `RUNS_PROGRAM` (any node runs a program) and `RUNS_IMAGE` (any node runs a container-kind host, the image host); open source, references |
 | req-computing-core-package-dependency | [Package Dependencies](#package-dependencies) | Implemented | `REQUIRES_PACKAGE`: the dependency links an SBOM lists between packages; a reference, no properties |
+| req-computing-core-program-package | [Program Root Package](#program-root-package) | Proposed | `RUNS_PACKAGE`: the package whose code is the program itself, the root of the program's dependency closure; a reference, no properties, drawn by whoever knows it |
+| req-computing-core-program-package-declared | [Declared Program Roots](#program-root-package) | Backlog | The SBOM generator declares each image's program roots and the parser draws `RUNS_PACKAGE` from them |
 | req-computing-core-sbom-document | [SBOM Document](#sbom-document) | Implemented | `sbom_document`: the record that one SBOM existed (content digest, revision lineage, signer), never its body; `DESCRIBES_HOST` |
 | req-computing-core-sbom-parse | [SBOM Parser](#sbom-parser) | Implemented | A pure, Django-free CycloneDX 1.4-1.7 parser: bytes in, a typed batch of packages, libraries, source packages, the operating system and edges out; fails closed |
 | req-computing-core-sbom-vulns | [SBOM Vulnerabilities](#sbom-vulnerabilities) | Implemented | `parse_cyclonedx_vulnerabilities`: the pure, verified-only reader of a scanned CycloneDX document's `vulnerabilities[]` into neutral records (vulnerabilities, matches against the nodes `parse_cyclonedx` makes, detecting tools); names no compliance vocabulary |
@@ -741,6 +743,37 @@ A reference, not containment: a dependency outlives the package that named it, a
 | req-computing-core-package-dependency-1 | The Sentence Connects | Implemented | `REQUIRES_PACKAGE` connects a `package` to a `package`; the reverse and any other endpoint type are refused wherever an endpoint declares its edges. | `::TestEdges::test_the_sentences_connect`, `::test_the_wrong_way_round_or_wrong_type_is_refused` |
 | req-computing-core-package-dependency-2 | Plain, Reference, Runtime | Implemented | The edge declares `identity: {discriminators: []}`, has no `property_schema`, carries `tap.computing: runtime`, and retiring a package leaves the packages it required reachable. | `::TestEdges::test_every_edge_declares_the_plain_identity_and_no_properties`, `::test_retiring_a_package_leaves_the_packages_it_required`, `::test_none_of_them_is_containment` |
 | req-computing-core-package-dependency-3 | No Self-Edge | Implemented | A document listing a component as depending on itself yields no edge. | `tests/test_sbom_parse.py::TestSkipsAreCounted::test_a_component_depending_on_itself_yields_no_edge`, `::test_two_listings_of_one_package_are_one_node_so_a_link_between_them_is_a_self_edge`. |
+
+### Program Root Package
+----
+RID: `req-computing-core-program-package`
+
+Status: `Proposed`
+
+An SBOM lists what an image holds and which package needs which (`REQUIRES_PACKAGE`). It does not say which program the image exists to run, so the grid can follow a package to the hosts that install it but not to the program that uses it. One edge closes the gap for the packages a program is built from: it names the program's **root package**, the package whose code is the program itself. The packages the program consumes are then everything reachable from the root along `REQUIRES_PACKAGE`. Read 2026-10-20 in the corpus document `tap-web-latest-arm64.cdx.json`: `tap` is a graph root (no component depends on it) and its closure along `dependsOn` is 43 pypi packages, so one edge to `tap` reaches the application's whole Python closure. The same document has no edge from a pypi component to an apk component (0 of 457), so a program's closure never includes system packages; those stay with the host that installs them, and a consumer that needs a rule for them applies its own (for example, the container's programs).
+
+#### Implementation
+
+| edge | sentence | justification |
+| --- | --- | --- |
+| `RUNS_PACKAGE__computing_core` | `<program> RUNS_PACKAGE <package>` | the package this program is. `RUNS_*` is the verb the neighbouring edges use (`RUNS_PROGRAM`, `RUNS_IMAGE`, `RUNS_OPERATING_SYSTEM`); the slug has two tokens, no modal and no trailing preposition (`req-tap-plugin-edge-naming`) |
+
+The edge is a reference, not containment: a package outlives the program that names it, and the edge is in no model's `CONTAINMENT_EDGES`. It declares the plain identity (`discriminators: []`), has no `property_schema`, and carries `tap.computing: runtime`. Its source is `computing_core__program` and its target is `computing_core__package`. `program` declares no edges, so its side stays open; `package` already declares edges, so its `INBOUND_EDGES` gains the slug.
+
+The edge states a root, not a closure. No edge is drawn from a program to a package it merely reaches through `REQUIRES_PACKAGE`, because that would be a second copy of the dependency graph. A program may have more than one root (a Python application and the interpreter package that runs it, say), and a package may be the root of more than one program.
+
+Who draws it. The SBOM does not say which package is the program, so the parser (`req-computing-core-sbom-parse`) draws no `RUNS_PACKAGE` edge. Whoever knows the pairing draws it: a seed, a collector, or a person. Declaring the roots in the build, so that the generator states them in the signed document and the parser draws the edge, is the Backlog requirement `req-computing-core-program-package-declared`; it needs the parser to find the `program` node from the document, which this requirement does not settle.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-program-package-1 | The Sentence Connects | Proposed | `RUNS_PACKAGE` connects a `program` to a `package` and carries `tap.computing: runtime`; the reverse and any other target type are refused wherever an endpoint declares its edges. | As `req-computing-core-inventory-edges-2`: `program` declares no edges, so its side is a grant, not a restriction. |
+| req-computing-core-program-package-2 | Plain, Reference, Runtime | Proposed | The edge declares `identity: {discriminators: []}`, has no `property_schema`, is in no model's `CONTAINMENT_EDGES`, and retiring a program leaves its root package reachable. | As `req-computing-core-package-dependency-2`. |
+| req-computing-core-program-package-3 | A Root Is Not A Closure | Proposed | The plugin ships no edge, collector or parser output that draws `RUNS_PACKAGE` to a package only reachable through `REQUIRES_PACKAGE`. | A review item: the closure is a walk over the existing edge. |
+| req-computing-core-program-package-4 | More Than One Root, And Shared Roots | Proposed | One program may draw the edge to several packages and one package may be the target of several programs; each pair is one edge. | Found again by type, source and target (the plain identity). |
+| req-computing-core-program-package-5 | Registered In The Manifest | Proposed | The manifest registers the edge, its slug equals its file name, and `package` lists the slug in its `INBOUND_EDGES`. | |
+| req-computing-core-program-package-6 | The Parser Draws None | Proposed | Parsing a document yields no `RUNS_PACKAGE` edge, and the parse report says nothing about one. | Until `req-computing-core-program-package-declared` lands. |
 
 ### SBOM Document
 ----
