@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.2](https://github.com/unified-systems-com/computing-core-tap/compare/v0.10.1...v0.10.2) (2026-10-21)
+
+
+### Features
+
+* **computing_core:** RUNS_PACKAGE, USES_KEY and an operating system running a program ([0df4b62](https://github.com/unified-systems-com/computing-core-tap/commit/0df4b62f3da6b6cdb2fc41cd972fc772f250556d))
+* **computing_core:** RUNS_PACKAGE, USES_KEY and an operating system running a program ([e59881e](https://github.com/unified-systems-com/computing-core-tap/commit/e59881e0dd5c540d99495e84287c2949d8a9b64d))
+
+
+### Bug Fixes
+
+* **release:** set the release-please manifest to the released version, 0.10.1 ([45aad44](https://github.com/unified-systems-com/computing-core-tap/commit/45aad4428feb9f806888832a767a5fce2f9f0acf))
+* **release:** set the release-please manifest to the released version, 0.10.1 ([90e2d1e](https://github.com/unified-systems-com/computing-core-tap/commit/90e2d1e53df8f27f9337d4f35e2677e5a9317895))
+
 ## [0.5.0](https://github.com/unified-systems-com/computing-core-tap/compare/v0.4.0...v0.5.0) (2026-10-08)
 
 
