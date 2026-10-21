@@ -44,6 +44,7 @@ Networking is an especially important part of this layer. v0 should model the st
 | req-computing-core-package-dependency | [Package Dependencies](#package-dependencies) | Implemented | `REQUIRES_PACKAGE`: the dependency links an SBOM lists between packages; a reference, no properties |
 | req-computing-core-program-package | [Program Root Package](#program-root-package) | Proposed | `RUNS_PACKAGE`: the package whose code is the program itself, the root of the program's dependency closure; a reference, no properties, drawn by whoever knows it |
 | req-computing-core-program-package-declared | [Declared Program Roots](#program-root-package) | Backlog | The SBOM generator declares each image's program roots and the parser draws `RUNS_PACKAGE` from them |
+| req-computing-core-program-key | [Program Key Use](#program-key-use) | Proposed | `USES_KEY`: a program uses this private key, public key or file (a TLS key a server reads); a reference, no properties |
 | req-computing-core-sbom-document | [SBOM Document](#sbom-document) | Implemented | `sbom_document`: the record that one SBOM existed (content digest, revision lineage, signer), never its body; `DESCRIBES_HOST` |
 | req-computing-core-sbom-parse | [SBOM Parser](#sbom-parser) | Implemented | A pure, Django-free CycloneDX 1.4-1.7 parser: bytes in, a typed batch of packages, libraries, source packages, the operating system and edges out; fails closed |
 | req-computing-core-sbom-vulns | [SBOM Vulnerabilities](#sbom-vulnerabilities) | Implemented | `parse_cyclonedx_vulnerabilities`: the pure, verified-only reader of a scanned CycloneDX document's `vulnerabilities[]` into neutral records (vulnerabilities, matches against the nodes `parse_cyclonedx` makes, detecting tools); names no compliance vocabulary |
@@ -710,6 +711,7 @@ The verb is `RUNS_*`, as in `RUNS_OPERATING_SYSTEM` here and `RUNS_SERVICE`, `RU
 | req-computing-core-runtime-edges-1 | Program And Image Sentences Connect | Implemented | `RUNS_PROGRAM` connects any node to a `program` and `RUNS_IMAGE` any node to a `host`, each carrying `tap.computing: runtime`; a program may run a program, so a container-to-gunicorn and a gunicorn-to-tap-web edge are the same type. | `tests/test_application_flow.py::TestEdges::test_runs_program_and_runs_image_connect` |
 | req-computing-core-runtime-edges-2 | Target Type Is Enforced Where Declared | Implemented | `RUNS_PROGRAM` to a `host` is refused. The edge definition's `targets` is a grant, not a restriction, so a target type that declares no edges (`program`, `tcp_connection`) stays open at its end, exactly as in `req-computing-core-inventory-edges-2`. | `::TestEdges::test_runs_program_to_a_host_is_refused` |
 | req-computing-core-runtime-edges-3 | References, Open Source, Plain Identity | Implemented | Both edges omit `sources`, declare the plain identity and no properties, carry `tap.computing: runtime`, and retiring the source with `cascade="contained"` leaves the target. | `::TestEdges::test_runs_edges_are_open_at_the_source_plain_and_not_containment` |
+| req-computing-core-runtime-edges-4 | An Operating System Holds Its Programs | Proposed | `RUNS_PROGRAM` from an `operating_system` to a `program` connects: the operating system holds the programs that are part of it (an init system, an SSH daemon, a shell) and every host running that operating system inherits them. No new edge is drawn for this; the semantics are recorded here so a reader does not take the edge to mean "this host is executing the program". If the grid refuses the edge because `operating_system` declares edges (`INBOUND_EDGES` only), the change is one `OUTBOUND_EDGES` entry on `operating_system` in this release, tested before any data depends on it. | George ruled 2026-10-20, relayed by rampart-pg, that this use of `RUNS_PROGRAM` stands in for a missing official edge. Whether the grid accepts it was read (`operating_system.py` declares inbound only), not run. |
 
 #### Acceptance Criteria
 
@@ -774,6 +776,31 @@ Who draws it. The SBOM does not say which package is the program, so the parser 
 | req-computing-core-program-package-4 | More Than One Root, And Shared Roots | Proposed | One program may draw the edge to several packages and one package may be the target of several programs; each pair is one edge. | Found again by type, source and target (the plain identity). |
 | req-computing-core-program-package-5 | Registered In The Manifest | Proposed | The manifest registers the edge, its slug equals its file name, and `package` lists the slug in its `INBOUND_EDGES`. | |
 | req-computing-core-program-package-6 | The Parser Draws None | Proposed | Parsing a document yields no `RUNS_PACKAGE` edge, and the parse report says nothing about one. | Until `req-computing-core-program-package-declared` lands. |
+
+### Program Key Use
+----
+RID: `req-computing-core-program-key`
+
+Status: `Proposed`
+
+A program can read a key or a file that is not part of any package: a server's TLS private key and certificate, a signing key. No edge says so today. `GENERATES_FILE` says a file was produced by something, not that a program uses it, and `RUNS_PROGRAM` can only target a program. One edge says the program uses the key or file. George ruled 2026-10-20, relayed by rampart-pg, to add the edge and cut a release with `RUNS_PACKAGE` in the same release, after the Overview page's container interior needed to show gunicorn using the container's TLS key pair.
+
+#### Implementation
+
+| edge | sentence | justification |
+| --- | --- | --- |
+| `USES_KEY__computing_core` | `<program> USES_KEY <private_key \| public_key \| file>` | the program reads this key material or this file at run time. The slug is George's and rampart-pg's wording; its target also admits a `file` (a certificate or key held as a file), which the builder may reword if `req-tap-plugin-edge-naming` or review prefers; two tokens, no modal, no trailing preposition |
+
+The edge is a reference, not containment: a key outlives the program that reads it, and the edge is in no model's `CONTAINMENT_EDGES`. It declares the plain identity (`discriminators: []`), has no `property_schema`, and carries `tap.computing: runtime`. Its source is `computing_core__program`; its targets are `computing_core__private_key`, `computing_core__public_key` and `computing_core__file`. `program`, `private_key`, `public_key` and `file` declare no edges (read 2026-10-20), so both ends are open and no model gains an `INBOUND_EDGES` or `OUTBOUND_EDGES` entry. The edge carries no key material and adds no field to any of the three target models.
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-program-key-1 | The Sentence Connects | Proposed | `USES_KEY` connects a `program` to a `private_key`, a `public_key` or a `file` and carries `tap.computing: runtime`; the reverse is refused wherever an endpoint declares its edges. | As `req-computing-core-inventory-edges-2`: none of the four types declares edges, so the ends are grants, not restrictions. |
+| req-computing-core-program-key-2 | Plain, Reference, Runtime | Proposed | The edge declares `identity: {discriminators: []}`, has no `property_schema`, is in no model's `CONTAINMENT_EDGES`, and retiring a program leaves the key or file reachable. | As `req-computing-core-package-dependency-2`. |
+| req-computing-core-program-key-3 | Registered In The Manifest | Proposed | The manifest registers the edge and its slug equals its file name. | |
+| req-computing-core-program-key-4 | One Release | Proposed | `RUNS_PACKAGE`, `USES_KEY` and the operating-system acceptance in `req-computing-core-runtime-edges-4` ship in one computing_core release. | George ruled 2026-10-20. |
 
 ### SBOM Document
 ----
