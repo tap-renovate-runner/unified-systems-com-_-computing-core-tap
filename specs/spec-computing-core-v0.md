@@ -45,6 +45,9 @@ Networking is an especially important part of this layer. v0 should model the st
 | req-computing-core-program-package | [Program Root Package](#program-root-package) | Implemented | `RUNS_PACKAGE`: the package whose code is the program itself, the root of the program's dependency closure; a reference, no properties, drawn by whoever knows it |
 | req-computing-core-program-package-declared | [Declared Program Roots](#program-root-package) | Backlog | The SBOM generator declares each image's program roots and the parser draws `RUNS_PACKAGE` from them |
 | req-computing-core-program-key | [Program Key Use](#program-key-use) | Implemented | `USES_KEY`: a program uses this private key, public key or file (a TLS key a server reads); a reference, no properties |
+| req-computing-core-module | [Module Modeling](#module-modeling) | Implemented | `module`: a unit of source code in a language (a Python package, a Go package, a JavaScript module), with where it sits and how large it is; no code is stored. |
+| req-computing-core-module-edges | [Module Edges](#module-edges) | Implemented | `LOADS_MODULE` (a program loads a module), `CONTAINS_MODULE` (a package, library or module contains a module) and `IMPORTS_MODULE` (a module imports a module, with a count). |
+| req-computing-core-module-symbol | [Module Symbols](#module-edges) | Backlog | Classes, functions and variables inside a module, populated later; calls between components. |
 | req-computing-core-sbom-document | [SBOM Document](#sbom-document) | Implemented | `sbom_document`: the record that one SBOM existed (content digest, revision lineage, signer), never its body; `DESCRIBES_HOST` |
 | req-computing-core-sbom-parse | [SBOM Parser](#sbom-parser) | Implemented | A pure, Django-free CycloneDX 1.4-1.7 parser: bytes in, a typed batch of packages, libraries, source packages, the operating system and edges out; fails closed |
 | req-computing-core-sbom-vulns | [SBOM Vulnerabilities](#sbom-vulnerabilities) | Implemented | `parse_cyclonedx_vulnerabilities`: the pure, verified-only reader of a scanned CycloneDX document's `vulnerabilities[]` into neutral records (vulnerabilities, matches against the nodes `parse_cyclonedx` makes, detecting tools); names no compliance vocabulary |
@@ -187,7 +190,7 @@ The initial v0 model set is:
 | Category | Models | Notes |
 | --- | --- | --- |
 | Compute | `host`; planned: `virtual_machine`, `container` | `host` is built (one type, `kind` says which environment); the two planned rows can still be minted as specialisations if a consumer needs them |
-| Runtime | `operating_system`, `program`, `process`; built since 2026-10-14: `operating_system`, `package`, `library`, `crypto_provider`; since 2026-10-15 `source_package` | Operating context plus executable/runtime units, and the software inventory of a host: see [Package](#package-modeling), [Source Package](#source-package-modeling), [Library](#library-modeling), [Operating System](#operating-system-modeling), [Crypto Provider](#crypto-provider-modeling) |
+| Runtime | `operating_system`, `program`, `process`; built since 2026-10-14: `operating_system`, `package`, `library`, `crypto_provider`; since 2026-10-15 `source_package`; since 2026-10-21 `module` | Operating context plus executable/runtime units, and the software inventory of a host: see [Package](#package-modeling), [Source Package](#source-package-modeling), [Library](#library-modeling), [Operating System](#operating-system-modeling), [Crypto Provider](#crypto-provider-modeling) |
 | Storage | `storage_volume`, `filesystem`, `file` | Generic storage abstraction plus mounted and contained data |
 | Networking | `network_interface`, `ip_address`, `ip_subnet`, `port` | Stable IP-stack primitives |
 | Transport/Protocol | `tcp_connection`, `application_protocol`; built since 2026-10-19: `application_flow` | Session node plus protocol abstraction above layer four, and the aggregate of traffic between a source and a destination: see [Application Flow](#application-flow-modeling) |
@@ -801,6 +804,70 @@ The edge is a reference, not containment: a key outlives the program that reads 
 | req-computing-core-program-key-2 | Plain, Reference, Runtime | Implemented | The edge declares `identity: {discriminators: []}`, has no `property_schema`, is in no model's `CONTAINMENT_EDGES`, and retiring a program leaves the key or file reachable. | As `req-computing-core-package-dependency-2`. |
 | req-computing-core-program-key-3 | Registered In The Manifest | Implemented | The manifest registers the edge and its slug equals its file name. | |
 | req-computing-core-program-key-4 | One Release | Implemented | `RUNS_PACKAGE`, `USES_KEY` and the operating-system acceptance in `req-computing-core-runtime-edges-4` ship in one computing_core release. | George ruled 2026-10-20. |
+
+### Module Modeling
+----
+RID: `req-computing-core-module`
+
+Status: `Implemented`
+
+A `module` is a unit of source code in a programming language: a Python package such as `tap_grid`, a Go package, a JavaScript module. A program loads modules, modules contain and import other modules, and a view of how a system is built (which parts it has, how big they are, what depends on what) draws them. Nothing in the grid names one today: `program` is a thing running, `library` and `package` are what a package manager or a build vendored in, and none says "this is the code of the application, and it is made of these parts". George ruled 2026-10-21 to add the type, as a common programming concept, and to give it a language. The playground's TAP internals spec of 2026-10-14 proposed it as `code_module` before any session needed it; this requirement takes the name `module`, and that spec follows.
+
+#### Implementation
+
+| field | meaning |
+| --- | --- |
+| `scope` | What the module belongs to: the name of the software unit that holds it, as that unit names itself (`tap`, `vuln_mosaic`). Identity. |
+| `name` | The module's own name in its language's naming: a dotted path for Python (`tap_grid`, `tap_grid.gryphon`). Identity. |
+| `language` | Required. The implementation language as a lower-case name of 1 to 32 characters (`^[a-z][a-z0-9+#.-]{0,31}$`), in the vocabulary `library.language` already uses (`c`, `python`, `rust`, `go`) and extended as needed (`javascript`, `typescript`, `java`, `shell`). |
+| `path` | Where it sits, relative to the root of its scope (a directory or a file); never an absolute path. `null` means not observed. |
+| `source_file_count` | The number of source files in the module, tests and generated files excluded, so a size can be drawn that means something. An integer of at least 0; `null` means not observed. |
+
+The node records that a module exists, where, in what language and how large. It has no field that could hold source text, a function body or a secret, and a test fails if one is added. A module that has not been measured has `null` counts, never 0 (`req-computing-core-models`, three states).
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-module-1 | Keyed By Scope And Name | Implemented | `computing_core__module` declares `NATURAL_KEY = (scope, name)`; both are required; the same name in another scope is another node. | |
+| req-computing-core-module-2 | Language Is Required And Shaped | Implemented | `language` is required and must match `^[a-z][a-z0-9+#.-]{0,31}$`; an empty value, upper case or a longer name is refused. | The shape, not a closed list, because languages are open-ended; `library.language` has the same values. |
+| req-computing-core-module-3 | Counts Are Three-State | Implemented | `source_file_count` is an integer of at least 0 or `null`; a negative or non-integer value is refused and `null` is stored as `null`. | |
+| req-computing-core-module-4 | Path Is Relative | Implemented | A `path` that is absolute or contains `..` is refused. | |
+| req-computing-core-module-5 | No Source Text | Implemented | The model has no field that holds source code, a function body or a secret, and a test fails if one is added. | Presence, never content, as `crypto_provider`. |
+| req-computing-core-module-6 | Registered | Implemented | The model is registered in the manifest with a `FIELD_CRUD_SCHEMA` and a `FIELD_VALIDATION_SCHEMA`, every property described, and carries `tap.computing: runtime`. | |
+
+### Module Edges
+----
+RID: `req-computing-core-module-edges`
+
+Status: `Implemented`
+
+Three edges connect modules to what loads them and to each other.
+
+#### Implementation
+
+| edge | sentence | justification |
+| --- | --- | --- |
+| `LOADS_MODULE__computing_core` | `<program> LOADS_MODULE <module>` | the running program loads this module's code. Parallel to `LOADS_LIBRARY`. |
+| `CONTAINS_MODULE__computing_core` | `<package \| library \| module> CONTAINS_MODULE <module>` | the source unit holds this module: a package ships its modules, a module holds its submodules. |
+| `IMPORTS_MODULE__computing_core` | `<module> IMPORTS_MODULE <module>` | this module's code imports that module. The one property, `import_count`, is the number of import statements. |
+
+Each slug has two tokens, no modal and no trailing preposition (`req-tap-plugin-edge-naming`). `LOADS_MODULE` and `IMPORTS_MODULE` are references and carry `tap.computing: runtime`; `CONTAINS_MODULE` carries the same and is the only one placed in a model's `CONTAINMENT_EDGES` for `module`, because a submodule is part of its parent. `LOADS_MODULE` and `CONTAINS_MODULE` declare the plain identity (`discriminators: []`) and no `property_schema`. `IMPORTS_MODULE` declares the plain identity and a `property_schema` with one property, `import_count`, an integer of at least 1, described. `program`, `package` and `library` already declare or do not declare edges as before; where one declares edges, its `OUTBOUND_EDGES` gains the slug, and `module` declares all three.
+
+An import is a fact about the code, not about a run, so `IMPORTS_MODULE` is drawn between the modules of one scope or across scopes alike. An import of a standard-library or third-party module is not drawn here: that is a package dependency (`REQUIRES_PACKAGE`), and a second copy of it would disagree.
+
+Classes, functions and variables inside a module are Backlog (`req-computing-core-module-symbol`).
+
+#### Acceptance Criteria
+
+| ACID | Title | Status | Description | Notes |
+| --- | --- | :---: | --- | --- |
+| req-computing-core-module-edges-1 | The Sentences Connect | Implemented | Each edge connects the types named in its sentence and the reverse or any other type is refused wherever an endpoint declares its edges. | As `req-computing-core-inventory-edges-2`. |
+| req-computing-core-module-edges-2 | Plain Identity | Implemented | `LOADS_MODULE` and `CONTAINS_MODULE` declare `identity: {discriminators: []}` and no `property_schema`; `IMPORTS_MODULE` declares the plain identity and a `property_schema` with `import_count` only. | |
+| req-computing-core-module-edges-3 | Import Count Is Positive | Implemented | An `IMPORTS_MODULE` edge with an `import_count` below 1, or a non-integer, is refused; one pair of modules has one edge, whose count states the number of statements. | |
+| req-computing-core-module-edges-4 | Only Containment Contains | Implemented | `CONTAINS_MODULE` is in `module`'s `CONTAINMENT_EDGES` and `LOADS_MODULE` and `IMPORTS_MODULE` are in no model's. | Retiring a program leaves its modules reachable. |
+| req-computing-core-module-edges-5 | Registered In The Manifest | Implemented | The manifest registers the three edges and each slug equals its file name. | |
+| req-computing-core-module-edges-6 | One Release | Implemented | `module` and its three edges ship in one computing_core release. | |
 
 ### SBOM Document
 ----

@@ -27,6 +27,7 @@ computing_core__library = "tap_plugin.computing_core.models.library.Library"
 computing_core__operating_system = "tap_plugin.computing_core.models.operating_system.OperatingSystem"
 computing_core__crypto_provider = "tap_plugin.computing_core.models.crypto_provider.CryptoProvider"
 computing_core__application_flow = "tap_plugin.computing_core.models.application_flow.ApplicationFlow"
+computing_core__module = "tap_plugin.computing_core.models.module.Module"
 
 [edges]
 GENERATES_FILE__computing_core = "edges/GENERATES_FILE.edge.json"
@@ -47,6 +48,9 @@ USES_KEY__computing_core = "edges/USES_KEY.edge.json"
 RUNS_IMAGE__computing_core = "edges/RUNS_IMAGE.edge.json"
 APPLICATION_FLOW_SOURCE__computing_core = "edges/APPLICATION_FLOW_SOURCE.edge.json"
 APPLICATION_FLOW_DESTINATION__computing_core = "edges/APPLICATION_FLOW_DESTINATION.edge.json"
+LOADS_MODULE__computing_core = "edges/LOADS_MODULE.edge.json"
+CONTAINS_MODULE__computing_core = "edges/CONTAINS_MODULE.edge.json"
+IMPORTS_MODULE__computing_core = "edges/IMPORTS_MODULE.edge.json"
 
 [grift]
 dimension = "grift/dimension.grift.json"

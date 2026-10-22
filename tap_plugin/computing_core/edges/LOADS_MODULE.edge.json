@@ -1,0 +1,17 @@
+{
+  "slug": "LOADS_MODULE__computing_core",
+  "name": "Loads Module",
+  "description": "This program loads this module's code when it runs: the interpreter imports the Python package, the process links the Go package. Parallel to LOADS_LIBRARY, for source units rather than built or vendored libraries. A reference, not containment: retiring a program leaves its modules reachable.",
+  "sources": [
+    "computing_core__program"
+  ],
+  "targets": [
+    "computing_core__module"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}

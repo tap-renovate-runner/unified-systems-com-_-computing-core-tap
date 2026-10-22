@@ -1,0 +1,19 @@
+{
+  "slug": "CONTAINS_MODULE__computing_core",
+  "name": "Contains Module",
+  "description": "This source unit holds this module: a package ships its modules, a library holds its modules, a module holds its submodules. Containment: a submodule is part of its parent, so retiring the parent retires it. The only module edge that is containment.",
+  "sources": [
+    "computing_core__package",
+    "computing_core__library",
+    "computing_core__module"
+  ],
+  "targets": [
+    "computing_core__module"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}

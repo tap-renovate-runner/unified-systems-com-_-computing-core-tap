@@ -1,0 +1,28 @@
+{
+  "slug": "IMPORTS_MODULE__computing_core",
+  "name": "Imports Module",
+  "description": "This module's code imports that module: a fact about the code, not about a run, drawn between the modules of one scope or across scopes alike. An import of a standard-library or third-party module is not drawn here; that is a package dependency (REQUIRES_PACKAGE) and a second copy would disagree. One pair of modules has one edge, whose import_count states how many import statements there are. A reference, not containment.",
+  "sources": [
+    "computing_core__module"
+  ],
+  "targets": [
+    "computing_core__module"
+  ],
+  "identity": {
+    "discriminators": []
+  },
+  "property_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "import_count": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "The number of import statements in the importing module that name the imported module. At least 1: an import that does not exist is not an edge."
+      }
+    }
+  },
+  "default_dimensions": {
+    "tap.computing": "runtime"
+  }
+}
