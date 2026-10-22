@@ -146,14 +146,14 @@ class TestModuleEdges:
             ("grid", "CONTAINS_MODULE", "package"),
             ("grid", "CONTAINS_MODULE", "library"),
             ("host", "CONTAINS_MODULE", "grid"),
-            ("program", "CONTAINS_MODULE", "grid"),
             ("package", "IMPORTS_MODULE", "grid"),
             ("grid", "IMPORTS_MODULE", "package"),
-            ("program", "IMPORTS_MODULE", "grid"),
-            ("grid", "IMPORTS_MODULE", "program"),
         ],
     )
     def test_the_wrong_way_round_or_wrong_type_is_refused(self, src, edge, dst):
+        # Refused wherever an endpoint type declares its edges. `program` declares none, so a pair
+        # whose only wrong end is the program is open (as in test_software_inventory); the pairs
+        # below are the ones `module`, `package`, `library` and `host` close.
         n = self._nodes()
         with pytest.raises(InvalidEdgeError):
             create_edge(n[src].entity, n[dst].entity, f"{edge}__computing_core")
