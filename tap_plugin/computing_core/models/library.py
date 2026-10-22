@@ -51,6 +51,7 @@ class Library(BaseModel):
             "nodes": [{"type": "computing_core__crypto_provider"}],
             "edges": [{"type": "CARRIES_CRYPTO_PROVIDER__computing_core"}],
         },
+        {"nodes": [{"type": "computing_core__module"}], "edges": [{"type": "CONTAINS_MODULE__computing_core"}]},
     ]
     INBOUND_EDGES: ClassVar[list[dict[str, Any]]] = [
         {"nodes": [{"type": "computing_core__program"}], "edges": [{"type": "LOADS_LIBRARY__computing_core"}]},
