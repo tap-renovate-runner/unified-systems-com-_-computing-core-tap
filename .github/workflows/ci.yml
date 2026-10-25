@@ -27,6 +27,6 @@ jobs:
       security-events: write
     # tap#365 / PR# 373 - tap: plugin-ci fails closed and tests the declared floor. Move
     # this pin to the SHA of tap main once PR# 373 merges (Renovate does not track it).
-    uses: unified-systems-com/tap/.github/workflows/plugin-ci.yml@da212f5c0cf73d50d644f1c608e14b47515ccee8
+    uses: unified-systems-com/tap/.github/workflows/plugin-ci.yml@1e483bea6e42fc81350021fdf35cc4f8551931dd
     with:
       plugin_slug: computing_core
