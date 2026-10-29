@@ -1,10 +1,17 @@
 """Host — a computing environment that runs an operating system and executes programs."""
 
+import re
 from typing import Any, ClassVar
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from tap_grid.models import BaseModel
+
+#: The shape of ``stable_id`` for a realm that fixes one (``req-computing-core-host-4``). A realm
+#: not listed here is not checked: the column stays open text, and the spec's "Realms in use" table
+#: is the record of what each value means. ``oci-digest`` is a container image's manifest digest.
+STABLE_ID_PATTERNS: dict[str, str] = {"oci-digest": r"sha256:[0-9a-f]{64}"}
 
 #: Closed vocabulary for `host.kind` (computing-core#8). Physical-versus-virtual is a property of
 #: one durable type, not a family of types: at collection time a collector often cannot tell a
@@ -146,6 +153,12 @@ class Host(BaseModel):
 
     class Meta(BaseModel.Meta):
         db_table = "computing_core__host"
+
+    def validate(self) -> None:
+        """``stable_id`` has the shape its realm fixes, when the realm fixes one (req-computing-core-host-4)."""
+        pattern = STABLE_ID_PATTERNS.get(self.realm)
+        if pattern is not None and not re.fullmatch(pattern, self.stable_id):
+            raise ValidationError({"stable_id": [f"stable_id for realm {self.realm!r} must match {pattern}."]})
 
     def get_name(self) -> str:
         return self.name or self.stable_id

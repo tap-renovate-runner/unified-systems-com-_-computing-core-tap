@@ -405,7 +405,7 @@ A `host` is a computing environment that runs an operating system and executes p
 
 | field | meaning |
 | --- | --- |
-| `realm` | The authority that issued `stable_id`: `aws-ec2`, `github-runner`, `machine-id`, `assert` (an operator's own slug), and so on. |
+| `realm` | The authority that issued `stable_id`: `aws-ec2`, `github-runner`, `machine-id`, `assert` (an operator's own slug), `oci-digest` (a container image's manifest digest), and so on; see Realms in use. |
 | `stable_id` | The host's identifier within that realm: an instance id, a runner label set, the contents of `/etc/machine-id`, an operator slug. **Never the hostname.** |
 | `name` | The display name, usually the hostname. |
 | `kind` | One of `workstation`, `server`, `virtual_machine`, `container`, `ephemeral_runner`, `cloud_dev_environment`, `unknown`. `null` means not observed. `unknown` means someone looked and could not tell. |
@@ -415,6 +415,18 @@ A `host` is a computing environment that runs an operating system and executes p
 **Why one type with a `kind`, not `virtual_machine` plus `container`.** At collection time a collector often cannot tell which environment it is looking at. A hosted runner is a VM, a self-hosted runner may be bare metal, and a Codespace is a container. Four types would force the collector to guess. One type with an honest `kind`, including `unknown`, does not.
 
 **Why `(realm, stable_id)` is the natural key.** A host has no single global identifier. Each authority that observes it issues its own, so the key names the authority and the identifier together. The hostname is not used because operators change it and two machines can share it. One machine seen through two realms (an EC2 instance id and its `/etc/machine-id`) becomes two `host` nodes. Joining them is a separate assertion and is never inferred. That is the multi-observer cost, and it is accepted.
+
+**Realms in use.** A realm is part of a host's identity, never a classification: it says whose numbering system `stable_id` comes from, and so decides whether two observations are one node. Classification ("every AWS host") is a dimension's job. The realm column stays open text, so a producer with a new authority can use a new value; this table is the record of what each value means, and a new value is added here in the change that first uses it.
+
+| realm | who issues `stable_id` | `stable_id` shape |
+| --- | --- | --- |
+| `aws-ec2` | AWS, one per EC2 instance | `i-` and hex, as AWS returns it |
+| `github-runner` | the runner pool's label set | the label set |
+| `machine-id` | the machine itself | the contents of `/etc/machine-id` |
+| `assert` | an operator | the operator's own slug |
+| `oci-digest` | the registry's content hash | `sha256:` and 64 lower-case hex characters, checked on write |
+
+**An image is a host with realm `oci-digest`.** There is no image type: a container image is the `host` whose realm is `oci-digest` and whose `stable_id` is the digest of the image manifest, with `kind` `container` and `name` the reference (`ghcr.io/org/app:1.2`). The same manifest in two registries is one host, because the digest is the same in both. A running container points at its image with `RUNS_IMAGE`, and an SBOM at the image with `DESCRIBES_HOST`. A record that carries a tag but no digest does not make an image host: the digest is unobserved and no value is invented for it. Which digest a producer reports (the manifest of one architecture or a multi-architecture index) is that producer's to state, and two sources reporting different kinds mint two hosts, by the multi-observer rule above. This is a first cut: whether the realm vocabulary should become nodes that explain each realm, or reuse dimension nodes, is open and is listed under Not Yet Built.
 
 **No identity module.** #8 proposed `tap_plugin/computing_core/identity.py`, which would derive ids with `uuid5`. That proposal predates `req-grid-entity-natural-key`. Ids are now always assigned, and a collector names nodes by batch-local refs that the declared natural key resolves. So a plugin that emits a `host` declares nothing beyond the payload, and no module derives ids.
 
@@ -427,8 +439,11 @@ A `host` is a computing environment that runs an operating system and executes p
 | req-computing-core-host-1 | One Host Type | Implemented | `computing_core__host` exists with `tap.computing: host`. Its natural key is `(realm, stable_id)`. A rename of `name` leaves the row findable by the generated search. | `tests/test_host_and_os_accounts.py::TestHost` |
 | req-computing-core-host-2 | Kind Is Closed, Null Is Unobserved | Implemented | `kind` accepts only the seven values above or `null`. `null` (not observed) is distinct from `unknown` (observed but indeterminate). | Authorizes the model's `# noqa: DJ001  (req-computing-core-host-2)`. `tests/test_host_and_os_accounts.py::TestHost::test_kind_is_a_closed_vocabulary` |
 | req-computing-core-host-3 | Host Contains Its Local Principals | Implemented | Retiring a host with `cascade="contained"` retires the `os_user` and `os_group` nodes it defines. | `tests/test_host_and_os_accounts.py::TestEdges::test_a_host_retires_its_accounts_and_groups` |
+| req-computing-core-host-4 | Image Host Realm | Implemented | A host whose `realm` is `oci-digest` has a `stable_id` of `sha256:` followed by 64 lower-case hex characters; any other shape (a tag, upper case, a short or long digest, an empty value) is refused. A host with any other realm is not checked. | `tests/test_host_and_os_accounts.py::TestImageHost` |
 
 #### Not Yet Built
+
+A node per realm that explains what the realm is and why it exists, so realm values do not float on the grid as bare strings. Whether those nodes are new or reuse dimension nodes is undecided and is a longer discussion; until it is held, the table under Realms in use is the record.
 
 These are from #8 and stay open there: `OWNS_HOST` (it was drawn from the retired `user`, so it would now come from `identity_core__human`, which is a cross-plugin question), `HOLDS_PRIVATE_KEY` (`host` -> `private_key`), and `KEY_PAIR`. Collectors must also avoid the node explosion #8 warns about: a hosted runner is one `host` per label set, not one per job.
 

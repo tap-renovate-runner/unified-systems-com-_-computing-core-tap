@@ -62,6 +62,44 @@ class TestHost:
         assert model.find_existing(realm="aws-ec2", stable_id=HOST["stable_id"]) is None
 
 
+DIGEST = "sha256:" + "ab12" * 16
+
+
+@pytest.mark.django_db
+class TestImageHost:
+    """req-computing-core-host-4: an ``oci-digest`` host's stable_id is a sha256 digest."""
+
+    def test_a_digest_makes_an_image_host(self):
+        node = _create(
+            "computing_core__host",
+            {"realm": "oci-digest", "stable_id": DIGEST, "name": "ghcr.io/org/app:1.2", "kind": "container"},
+        )
+        node.entity.refresh_from_db()
+        assert (node.realm, node.stable_id, node.kind) == ("oci-digest", DIGEST, "container")
+        assert node.entity.name == "ghcr.io/org/app:1.2"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "ghcr.io/org/app:1.2",  # a tag is not a digest
+            "sha256:" + "AB12" * 16,  # upper case
+            "sha256:" + "ab12" * 15,  # too short
+            "sha256:" + "ab12" * 17,  # too long
+            "sha512:" + "ab12" * 16,  # another algorithm
+            DIGEST + "\n",  # a trailing newline must not pass
+        ],
+    )
+    def test_anything_but_a_sha256_digest_is_refused(self, bad):
+        assert not create_node("computing_core__host", {"realm": "oci-digest", "stable_id": bad}).success
+
+    def test_the_same_digest_is_one_host_and_other_realms_are_unchecked(self):
+        node = _create("computing_core__host", {"realm": "oci-digest", "stable_id": DIGEST})
+        model = get_model_class("computing_core__host")
+        assert model.find_existing(realm="oci-digest", stable_id=DIGEST).pk == node.pk
+        # another authority may use any shape; the pattern is the oci-digest realm's alone
+        assert create_node("computing_core__host", {"realm": "assert", "stable_id": "not-a-digest"}).success
+
+
 @pytest.mark.django_db
 class TestOsUser:
     def test_windows_account_keeps_its_sid_across_a_rename(self):
